@@ -3,6 +3,17 @@ import type { Config } from "tailwindcss";
 export default {
   darkMode: ["class"],
   content: ["./pages/**/*.{ts,tsx}", "./components/**/*.{ts,tsx}", "./app/**/*.{ts,tsx}", "./src/**/*.{ts,tsx}"],
+  safelist: [
+    "bg-cat-work", "bg-cat-work-soft", "text-cat-work",
+    "bg-cat-home", "bg-cat-home-soft", "text-cat-home",
+    "bg-cat-health", "bg-cat-health-soft", "text-cat-health",
+    "bg-cat-personal", "bg-cat-personal-soft", "text-cat-personal",
+    "bg-cat-social", "bg-cat-social-soft", "text-cat-social",
+    "bg-cat-admin", "bg-cat-admin-soft", "text-cat-admin",
+    "bg-cat-other", "bg-cat-other-soft", "text-cat-other",
+    "border-cat-work", "border-cat-home", "border-cat-health",
+    "border-cat-personal", "border-cat-social", "border-cat-admin", "border-cat-other",
+  ],
   prefix: "",
   theme: {
     container: {
