@@ -51,7 +51,11 @@ export default function OnboardingWizard({ open, initial, onComplete }: Props) {
 
   return (
     <Dialog open={open}>
-      <DialogContent className="max-w-2xl p-0 gap-0 overflow-hidden" hideClose>
+      <DialogContent
+        className="max-w-2xl p-0 gap-0 overflow-hidden [&>button]:hidden"
+        onPointerDownOutside={(e) => e.preventDefault()}
+        onEscapeKeyDown={(e) => e.preventDefault()}
+      >
         <div className="px-7 pt-7 pb-4">
           <div className="flex items-center gap-3 mb-4">
             <div className="h-10 w-10 rounded-xl bg-primary/10 grid place-items-center text-primary">
