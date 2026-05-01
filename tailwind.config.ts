@@ -3,6 +3,17 @@ import type { Config } from "tailwindcss";
 export default {
   darkMode: ["class"],
   content: ["./pages/**/*.{ts,tsx}", "./components/**/*.{ts,tsx}", "./app/**/*.{ts,tsx}", "./src/**/*.{ts,tsx}"],
+  safelist: [
+    "bg-cat-work", "bg-cat-work-soft", "text-cat-work",
+    "bg-cat-home", "bg-cat-home-soft", "text-cat-home",
+    "bg-cat-health", "bg-cat-health-soft", "text-cat-health",
+    "bg-cat-personal", "bg-cat-personal-soft", "text-cat-personal",
+    "bg-cat-social", "bg-cat-social-soft", "text-cat-social",
+    "bg-cat-admin", "bg-cat-admin-soft", "text-cat-admin",
+    "bg-cat-other", "bg-cat-other-soft", "text-cat-other",
+    "border-cat-work", "border-cat-home", "border-cat-health",
+    "border-cat-personal", "border-cat-social", "border-cat-admin", "border-cat-other",
+  ],
   prefix: "",
   theme: {
     container: {
@@ -57,6 +68,26 @@ export default {
           border: "hsl(var(--sidebar-border))",
           ring: "hsl(var(--sidebar-ring))",
         },
+        cat: {
+          work: "hsl(var(--cat-work))",
+          "work-soft": "hsl(var(--cat-work-soft))",
+          home: "hsl(var(--cat-home))",
+          "home-soft": "hsl(var(--cat-home-soft))",
+          health: "hsl(var(--cat-health))",
+          "health-soft": "hsl(var(--cat-health-soft))",
+          personal: "hsl(var(--cat-personal))",
+          "personal-soft": "hsl(var(--cat-personal-soft))",
+          social: "hsl(var(--cat-social))",
+          "social-soft": "hsl(var(--cat-social-soft))",
+          admin: "hsl(var(--cat-admin))",
+          "admin-soft": "hsl(var(--cat-admin-soft))",
+          other: "hsl(var(--cat-other))",
+          "other-soft": "hsl(var(--cat-other-soft))",
+        },
+      },
+      fontFamily: {
+        sans: ['Inter', 'system-ui', 'sans-serif'],
+        display: ['Fraunces', 'Georgia', 'serif'],
       },
       borderRadius: {
         lg: "var(--radius)",
