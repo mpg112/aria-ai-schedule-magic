@@ -4,14 +4,12 @@ import { Button } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Checkbox } from "@/components/ui/checkbox";
 import { Switch } from "@/components/ui/switch";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
-import { Calendar, ListChecks, Settings2, ChevronDown, Plus, Trash2, Sparkles } from "lucide-react";
-import { AriaState, CATEGORY_META, Category, DAYS, DayKey, FixedBlock, FlexibleTask, Frequency, Priority, TimeOfDay } from "@/lib/aria-types";
+import { TimeSelect5 } from "@/components/ui/quantized-selects";
+import { Calendar, ListChecks, Settings2, Plus, Trash2, Sparkles } from "lucide-react";
+import { TasksStep } from "@/components/aria/tasks-step";
+import { AriaState, CATEGORY_META, Category, DAYS, DayKey, FixedBlock } from "@/lib/aria-types";
 import { uid } from "@/lib/aria-storage";
-import { SUGGESTED_CATEGORIES, SUGGESTED_TASKS, suggestedToTask } from "@/lib/suggested-tasks";
 import { cn } from "@/lib/utils";
 
 interface Props {
@@ -33,7 +31,8 @@ export default function OnboardingWizard({ open, initial, onComplete }: Props) {
       ? initial.fixedBlocks
       : [{ id: uid(), title: "Work", days: ["Mon","Tue","Wed","Thu","Fri"], start: "09:00", end: "18:00", category: "work" }]
   );
-  const [tasks, setTasks] = useState<FlexibleTask[]>(initial.tasks);
+  const [tasks, setTasks] = useState(initial.tasks);
+  const [customTaskCategories, setCustomTaskCategories] = useState(initial.customTaskCategories ?? []);
   const [prefs, setPrefs] = useState(initial.preferences);
 
   const progress = (step / STEPS.length) * 100;
@@ -45,6 +44,7 @@ export default function OnboardingWizard({ open, initial, onComplete }: Props) {
       onboarded: true,
       fixedBlocks,
       tasks,
+      customTaskCategories,
       preferences: prefs,
     });
   };
@@ -74,7 +74,14 @@ export default function OnboardingWizard({ open, initial, onComplete }: Props) {
 
         <div className="px-7 py-5 max-h-[55vh] overflow-y-auto">
           {step === 1 && <FixedStep blocks={fixedBlocks} setBlocks={setFixedBlocks} />}
-          {step === 2 && <TasksStep tasks={tasks} setTasks={setTasks} />}
+          {step === 2 && (
+            <TasksStep
+              tasks={tasks}
+              setTasks={setTasks}
+              customTaskCategories={customTaskCategories}
+              setCustomTaskCategories={setCustomTaskCategories}
+            />
+          )}
           {step === 3 && <PrefsStep prefs={prefs} setPrefs={setPrefs} />}
         </div>
 
@@ -153,13 +160,18 @@ function FixedStep({ blocks, setBlocks }: { blocks: FixedBlock[]; setBlocks: (b:
             })}
           </div>
           <div className="grid grid-cols-2 gap-3">
-            <div>
+            <div className="space-y-1.5">
               <Label className="text-xs text-muted-foreground">Start</Label>
-              <Input type="time" value={b.start} onChange={(e) => update(b.id, { start: e.target.value })} />
+              <TimeSelect5 value={b.start} onChange={(v) => update(b.id, { start: v })} triggerClassName="h-9 w-full" />
             </div>
-            <div>
+            <div className="space-y-1.5">
               <Label className="text-xs text-muted-foreground">End</Label>
-              <Input type="time" value={b.end} onChange={(e) => update(b.id, { end: e.target.value })} />
+              <TimeSelect5
+                value={b.end}
+                onChange={(v) => update(b.id, { end: v })}
+                triggerClassName="h-9 w-full"
+                allowMidnightEnd
+              />
             </div>
           </div>
         </div>
@@ -171,136 +183,6 @@ function FixedStep({ blocks, setBlocks }: { blocks: FixedBlock[]; setBlocks: (b:
   );
 }
 
-/* ---------- Step 2 ---------- */
-
-function TasksStep({ tasks, setTasks }: { tasks: FlexibleTask[]; setTasks: (t: FlexibleTask[]) => void }) {
-  const has = (title: string, cat: Category) => tasks.some((t) => t.title === title && t.category === cat);
-  const toggleSuggested = (title: string, cat: Category) => {
-    if (has(title, cat)) {
-      setTasks(tasks.filter((t) => !(t.title === title && t.category === cat)));
-    } else {
-      const s = SUGGESTED_TASKS[cat].find((x) => x.title === title);
-      if (s) setTasks([...tasks, suggestedToTask(s)]);
-    }
-  };
-  const updateTask = (id: string, patch: Partial<FlexibleTask>) =>
-    setTasks(tasks.map((t) => (t.id === id ? { ...t, ...patch } : t)));
-  const removeTask = (id: string) => setTasks(tasks.filter((t) => t.id !== id));
-  const addCustom = () =>
-    setTasks([
-      ...tasks,
-      { id: uid(), title: "New task", category: "other", durationMin: 60, frequency: "weekly", preferredTimeOfDay: "any", preferredDay: "any", priority: "medium" },
-    ]);
-
-  return (
-    <div className="space-y-3">
-      {SUGGESTED_CATEGORIES.map((cat) => {
-        const meta = CATEGORY_META[cat];
-        const items = SUGGESTED_TASKS[cat];
-        return (
-          <Collapsible key={cat} defaultOpen={cat === "home"}>
-            <CollapsibleTrigger className="w-full flex items-center justify-between rounded-xl border bg-card px-4 py-3 hover:bg-muted/40 transition-colors group">
-              <span className="flex items-center gap-2.5 font-medium">
-                <span className="text-lg">{meta.emoji}</span> {meta.label}
-              </span>
-              <ChevronDown className="h-4 w-4 text-muted-foreground transition-transform group-data-[state=open]:rotate-180" />
-            </CollapsibleTrigger>
-            <CollapsibleContent className="px-4 pt-3 space-y-2">
-              {items.map((s) => {
-                const active = has(s.title, cat);
-                return (
-                  <label
-                    key={s.title}
-                    className={cn(
-                      "flex items-center gap-3 rounded-lg border p-3 cursor-pointer transition-all",
-                      active ? "border-primary/50 bg-primary/5" : "border-border bg-background hover:border-primary/30"
-                    )}
-                  >
-                    <Checkbox checked={active} onCheckedChange={() => toggleSuggested(s.title, cat)} />
-                    <div className="flex-1">
-                      <div className="font-medium text-sm">{s.title}</div>
-                      <div className="text-xs text-muted-foreground">
-                        {s.durationMin} min · {s.preferredTimeOfDay} · {s.frequency}
-                      </div>
-                    </div>
-                  </label>
-                );
-              })}
-            </CollapsibleContent>
-          </Collapsible>
-        );
-      })}
-
-      {tasks.length > 0 && (
-        <div className="pt-4 mt-2 border-t">
-          <div className="text-xs font-semibold uppercase tracking-wider text-muted-foreground mb-3">
-            Selected tasks ({tasks.length}) — fine-tune
-          </div>
-          <div className="space-y-2">
-            {tasks.map((t) => (
-              <div key={t.id} className="rounded-lg border bg-card p-3 space-y-2">
-                <div className="flex items-center gap-2">
-                  <Input value={t.title} onChange={(e) => updateTask(t.id, { title: e.target.value })} className="font-medium h-9" />
-                  <Button variant="ghost" size="icon" onClick={() => removeTask(t.id)} className="text-muted-foreground hover:text-destructive shrink-0">
-                    <Trash2 className="h-4 w-4" />
-                  </Button>
-                </div>
-                <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
-                  <NumInput label="Min" value={t.durationMin} onChange={(v) => updateTask(t.id, { durationMin: v })} />
-                  <SmallSelect
-                    label="When"
-                    value={t.preferredTimeOfDay}
-                    onChange={(v) => updateTask(t.id, { preferredTimeOfDay: v as TimeOfDay })}
-                    options={[{v:"any",l:"Any"},{v:"morning",l:"Morning"},{v:"afternoon",l:"Afternoon"},{v:"evening",l:"Evening"}]}
-                  />
-                  <SmallSelect
-                    label="Day"
-                    value={t.preferredDay ?? "any"}
-                    onChange={(v) => updateTask(t.id, { preferredDay: v as DayKey | "any" })}
-                    options={[{v:"any",l:"Any"}, ...DAYS.map(d=>({v:d,l:d}))]}
-                  />
-                  <SmallSelect
-                    label="Frequency"
-                    value={t.frequency}
-                    onChange={(v) => updateTask(t.id, { frequency: v as Frequency })}
-                    options={[{v:"once",l:"Once"},{v:"weekly",l:"Weekly"},{v:"as-needed",l:"As needed"}]}
-                  />
-                </div>
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
-
-      <Button variant="outline" onClick={addCustom} className="w-full gap-2 mt-3">
-        <Plus className="h-4 w-4" /> Add a custom task
-      </Button>
-    </div>
-  );
-}
-
-function NumInput({ label, value, onChange }: { label: string; value: number; onChange: (v: number) => void }) {
-  return (
-    <div>
-      <Label className="text-[10px] uppercase tracking-wider text-muted-foreground">{label}</Label>
-      <Input type="number" min={5} step={5} value={value} onChange={(e) => onChange(Number(e.target.value))} className="h-9" />
-    </div>
-  );
-}
-function SmallSelect({ label, value, onChange, options }: { label: string; value: string; onChange: (v: string) => void; options: { v: string; l: string }[] }) {
-  return (
-    <div>
-      <Label className="text-[10px] uppercase tracking-wider text-muted-foreground">{label}</Label>
-      <Select value={value} onValueChange={onChange}>
-        <SelectTrigger className="h-9"><SelectValue /></SelectTrigger>
-        <SelectContent>
-          {options.map((o) => <SelectItem key={o.v} value={o.v}>{o.l}</SelectItem>)}
-        </SelectContent>
-      </Select>
-    </div>
-  );
-}
-
 /* ---------- Step 3 ---------- */
 
 function PrefsStep({ prefs, setPrefs }: { prefs: AriaState["preferences"]; setPrefs: (p: AriaState["preferences"]) => void }) {
@@ -308,7 +190,12 @@ function PrefsStep({ prefs, setPrefs }: { prefs: AriaState["preferences"]; setPr
     <div className="space-y-4">
       <div className="rounded-xl border bg-card p-4 space-y-3">
         <Label className="text-sm font-medium">Preferred morning start</Label>
-        <Input type="time" value={prefs.morningStart} onChange={(e) => setPrefs({ ...prefs, morningStart: e.target.value })} className="max-w-[180px]" />
+        <TimeSelect5
+          value={prefs.morningStart}
+          onChange={(v) => setPrefs({ ...prefs, morningStart: v })}
+          className="max-w-[260px]"
+          triggerClassName="h-10 w-full"
+        />
       </div>
 
       <ToggleRow
@@ -359,11 +246,16 @@ function PrefsStep({ prefs, setPrefs }: { prefs: AriaState["preferences"]; setPr
       <div className="grid grid-cols-2 gap-3">
         <div className="rounded-xl border bg-card p-4 space-y-2">
           <Label className="text-sm font-medium">Day starts</Label>
-          <Input type="time" value={prefs.dayStart} onChange={(e) => setPrefs({ ...prefs, dayStart: e.target.value })} />
+          <TimeSelect5 value={prefs.dayStart} onChange={(v) => setPrefs({ ...prefs, dayStart: v })} triggerClassName="h-10 w-full" />
         </div>
         <div className="rounded-xl border bg-card p-4 space-y-2">
           <Label className="text-sm font-medium">Day ends</Label>
-          <Input type="time" value={prefs.dayEnd} onChange={(e) => setPrefs({ ...prefs, dayEnd: e.target.value })} />
+          <TimeSelect5
+            value={prefs.dayEnd}
+            onChange={(v) => setPrefs({ ...prefs, dayEnd: v })}
+            triggerClassName="h-10 w-full"
+            allowMidnightEnd
+          />
         </div>
       </div>
     </div>

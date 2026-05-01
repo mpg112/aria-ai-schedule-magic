@@ -1,4 +1,4 @@
-import { Category, FlexibleTask } from "./aria-types";
+import { Category, FlexibleTask, normalizeFlexibleTask } from "./aria-types";
 import { uid } from "./aria-storage";
 
 export interface SuggestedTask {
@@ -7,6 +7,9 @@ export interface SuggestedTask {
   durationMin: number;
   preferredTimeOfDay: FlexibleTask["preferredTimeOfDay"];
   frequency: FlexibleTask["frequency"];
+  /** Weekly templates only: e.g. gym 3–4× per week */
+  timesPerWeekMin?: number;
+  timesPerWeekMax?: number;
 }
 
 export const SUGGESTED_TASKS: Record<Category, SuggestedTask[]> = {
@@ -17,7 +20,15 @@ export const SUGGESTED_TASKS: Record<Category, SuggestedTask[]> = {
     { title: "Cleaning", category: "home", durationMin: 60, preferredTimeOfDay: "morning", frequency: "weekly" },
   ],
   health: [
-    { title: "Gym session", category: "health", durationMin: 60, preferredTimeOfDay: "morning", frequency: "weekly" },
+    {
+      title: "Gym session",
+      category: "health",
+      durationMin: 60,
+      preferredTimeOfDay: "morning",
+      frequency: "weekly",
+      timesPerWeekMin: 3,
+      timesPerWeekMax: 4,
+    },
     { title: "Run", category: "health", durationMin: 45, preferredTimeOfDay: "morning", frequency: "weekly" },
     { title: "Doctor appointment", category: "health", durationMin: 60, preferredTimeOfDay: "morning", frequency: "as-needed" },
   ],
@@ -41,14 +52,21 @@ export const SUGGESTED_TASKS: Record<Category, SuggestedTask[]> = {
 export const SUGGESTED_CATEGORIES: Category[] = ["home", "health", "personal", "social", "admin"];
 
 export function suggestedToTask(s: SuggestedTask): FlexibleTask {
-  return {
+  return normalizeFlexibleTask({
     id: uid(),
     title: s.title,
     category: s.category,
     durationMin: s.durationMin,
-    preferredTimeOfDay: s.preferredTimeOfDay,
-    preferredDay: "any",
     frequency: s.frequency,
+    ...(s.timesPerWeekMin != null ? { timesPerWeekMin: s.timesPerWeekMin } : {}),
+    ...(s.timesPerWeekMax != null ? { timesPerWeekMax: s.timesPerWeekMax } : {}),
     priority: "medium",
-  };
+    preferredTimeStyle: "preset",
+    preferredTimeOfDay: s.preferredTimeOfDay,
+    preferredTimeWindows: [],
+    preferredWeekdays: [],
+    monthWeekOrdinal: "any",
+    monthDaysOfMonth: [],
+    schedulingNotes: "",
+  });
 }

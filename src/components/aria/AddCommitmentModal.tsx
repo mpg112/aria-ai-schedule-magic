@@ -6,6 +6,7 @@ import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { CATEGORY_META, Category, DayKey, DAYS, Priority } from "@/lib/aria-types";
+import { DurationSelect5, TimeSelect5 } from "@/components/ui/quantized-selects";
 import { Loader2, Sparkles } from "lucide-react";
 
 export interface NewCommitment {
@@ -74,10 +75,13 @@ export default function AddCommitmentModal({ open, onOpenChange, onSubmit, loadi
           </div>
 
           <div className="grid grid-cols-2 gap-3">
-            <div className="space-y-1.5">
-              <Label className="text-xs">Duration (min)</Label>
-              <Input type="number" min={5} step={5} value={c.durationMin} onChange={(e) => u({ durationMin: Number(e.target.value) })} />
-            </div>
+            <DurationSelect5
+              label="Duration (min)"
+              labelClassName="text-xs"
+              value={c.durationMin}
+              onChange={(v) => u({ durationMin: v })}
+              triggerClassName="h-10 w-full"
+            />
             <div className="space-y-1.5">
               <Label className="text-xs">Category</Label>
               <Select value={c.category} onValueChange={(v) => u({ category: v as Category })}>
@@ -108,7 +112,13 @@ export default function AddCommitmentModal({ open, onOpenChange, onSubmit, loadi
           <ToggleRow
             title="Fixed time (don't let Aria pick)"
             checked={c.fixedTime}
-            onChange={(v) => u({ fixedTime: v })}
+            onChange={(v) =>
+              u(
+                v
+                  ? { fixedTime: true, fixedDay: c.fixedDay ?? "Mon", fixedStart: c.fixedStart ?? "09:00" }
+                  : { fixedTime: false, fixedDay: undefined, fixedStart: undefined },
+              )
+            }
           />
           {c.fixedTime && (
             <div className="grid grid-cols-2 gap-3">
@@ -118,7 +128,11 @@ export default function AddCommitmentModal({ open, onOpenChange, onSubmit, loadi
                   {DAYS.map((d) => <SelectItem key={d} value={d}>{d}</SelectItem>)}
                 </SelectContent>
               </Select>
-              <Input type="time" value={c.fixedStart ?? ""} onChange={(e) => u({ fixedStart: e.target.value })} />
+              <TimeSelect5
+                value={c.fixedStart ?? "09:00"}
+                onChange={(v) => u({ fixedStart: v })}
+                triggerClassName="h-10 w-full"
+              />
             </div>
           )}
 

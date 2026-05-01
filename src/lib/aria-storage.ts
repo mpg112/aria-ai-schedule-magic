@@ -1,4 +1,4 @@
-import { AriaState, EMPTY_STATE } from "./aria-types";
+import { AriaState, EMPTY_STATE, FlexibleTask, normalizeFlexibleTask } from "./aria-types";
 
 const KEY = "aria-state-v1";
 
@@ -7,7 +7,17 @@ export function loadState(): AriaState {
     const raw = localStorage.getItem(KEY);
     if (!raw) return EMPTY_STATE;
     const parsed = JSON.parse(raw);
-    return { ...EMPTY_STATE, ...parsed, preferences: { ...EMPTY_STATE.preferences, ...(parsed.preferences ?? {}) } };
+    return {
+      ...EMPTY_STATE,
+      ...parsed,
+      preferences: { ...EMPTY_STATE.preferences, ...(parsed.preferences ?? {}) },
+      customTaskCategories: Array.isArray(parsed.customTaskCategories)
+        ? parsed.customTaskCategories
+        : EMPTY_STATE.customTaskCategories,
+      tasks: Array.isArray(parsed.tasks)
+        ? (parsed.tasks as FlexibleTask[]).map((t) => normalizeFlexibleTask(t))
+        : EMPTY_STATE.tasks,
+    };
   } catch {
     return EMPTY_STATE;
   }

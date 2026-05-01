@@ -1,4 +1,4 @@
-import { AriaState } from "./aria-types";
+import { AriaState, FlexibleTask, normalizeFlexibleTask } from "./aria-types";
 import { uid } from "./aria-storage";
 
 export function getDemoState(): AriaState {
@@ -22,8 +22,20 @@ export function getDemoState(): AriaState {
         category: "work",
       },
     ],
+    customTaskCategories: [],
     tasks: [
-      { id: uid(), title: "Gym session", category: "health", durationMin: 60, frequency: "weekly", preferredTimeOfDay: "morning", preferredDay: "any", priority: "high" },
+      {
+        id: uid(),
+        title: "Gym session",
+        category: "health",
+        durationMin: 60,
+        frequency: "weekly",
+        timesPerWeekMin: 3,
+        timesPerWeekMax: 4,
+        preferredTimeOfDay: "morning",
+        preferredDay: "any",
+        priority: "high",
+      },
       { id: uid(), title: "Run", category: "health", durationMin: 45, frequency: "weekly", preferredTimeOfDay: "morning", preferredDay: "Sat", priority: "medium" },
       { id: uid(), title: "Grocery shopping", category: "home", durationMin: 60, frequency: "weekly", preferredTimeOfDay: "morning", preferredDay: "Sat", priority: "high" },
       { id: uid(), title: "Meal prep", category: "home", durationMin: 90, frequency: "weekly", preferredTimeOfDay: "afternoon", preferredDay: "Sun", priority: "medium" },
@@ -33,7 +45,7 @@ export function getDemoState(): AriaState {
       { id: uid(), title: "Catch up with friends", category: "social", durationMin: 120, frequency: "weekly", preferredTimeOfDay: "evening", preferredDay: "Fri", priority: "high" },
       { id: uid(), title: "Family call", category: "social", durationMin: 30, frequency: "weekly", preferredTimeOfDay: "evening", preferredDay: "Sun", priority: "medium" },
       { id: uid(), title: "Pay bills & inbox", category: "admin", durationMin: 45, frequency: "weekly", preferredTimeOfDay: "afternoon", preferredDay: "any", priority: "low" },
-    ],
+    ].map((t) => normalizeFlexibleTask(t as FlexibleTask)),
     preferences: {
       morningStart: "07:00",
       clusterErrands: false,
