@@ -1,5 +1,33 @@
 import { supabase } from "@/integrations/supabase/client";
-import { AriaState, ChatMessage, ScheduledEvent } from "./aria-types";
+import { AriaState, ChatMessage, DAYS, DayKey, FlexibleTask, ScheduledEvent } from "./aria-types";
+
+/** Extra fields on tasks in the AI payload only (not persisted). */
+export type FlexibleTaskAIContext = FlexibleTask & { ariaSchedulingContract?: string };
+
+function buildDailySchedulingContract(task: FlexibleTask, freeDays: DayKey[]): string {
+  const free = new Set(freeDays);
+  const eligibleDays = DAYS.filter((d) => !free.has(d));
+  const perDay = task.timesPerDay;
+  const total = eligibleDays.length * perDay;
+  const windowsDesc = task.preferredTimeWindows
+    .map((w, i) => `#${i + 1} ${w.start}–${w.end}`)
+    .join("; ");
+  return (
+    `DAILY TASK — NON-NEGOTIABLE COUNT: On EVERY calendar day in this week except preferences.freeDays, you must output EXACTLY ${perDay} separate flexible events for this task (not 1 per day). ` +
+    `Eligible days for this task: ${eligibleDays.join(", ") || "(none — user marked all days free)"}. ` +
+    `Minimum events this week for this task row: ${total} (=${eligibleDays.length} days × ${perDay} per day). ` +
+    `Map occurrence order to preferredTimeWindows in order each day: ${windowsDesc}. ` +
+    `Each event needs a unique id (e.g. "${task.id}-Tue-1" for Tuesday, 2nd occurrence).`
+  );
+}
+
+function tasksForAIContext(tasks: FlexibleTask[], freeDays: DayKey[]): FlexibleTaskAIContext[] {
+  return tasks.map((t) =>
+    t.frequency === "daily"
+      ? { ...t, ariaSchedulingContract: buildDailySchedulingContract(t, freeDays) }
+      : t,
+  );
+}
 
 export interface AriaResponse {
   events: ScheduledEvent[];
@@ -20,7 +48,7 @@ export async function callAria({ state, history, userMessage }: CallArgs): Promi
 
   const context = {
     fixedBlocks: state.fixedBlocks,
-    tasks: state.tasks,
+    tasks: tasksForAIContext(state.tasks, state.preferences.freeDays ?? []),
     preferences: state.preferences,
     currentEvents: state.events,
   };

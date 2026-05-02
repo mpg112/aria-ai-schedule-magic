@@ -86,10 +86,11 @@ export default function CalendarGrid({ events, dayStart, dayEnd, onEventClick }:
                 const top = ((toMin(ev.start) - startMin) / 60) * HOUR_HEIGHT;
                 const height = Math.max(20, ((toMin(ev.end) - toMin(ev.start)) / 60) * HOUR_HEIGHT - 2);
                 const meta = CATEGORY_META[ev.category];
+                const emoji = ev.emoji ?? meta.emoji;
 
                 const baseColor =
                   ev.kind === "fixed"
-                    ? "bg-cat-work text-white border-cat-work"
+                    ? "border border-neutral-300 border-l-[3px] border-l-neutral-500 bg-neutral-200 text-neutral-900 shadow-sm dark:border-neutral-600 dark:border-l-neutral-400 dark:bg-neutral-700 dark:text-neutral-100"
                     : `bg-cat-${ev.category}-soft border-cat-${ev.category} text-cat-${ev.category}`;
 
                 return (
@@ -104,7 +105,7 @@ export default function CalendarGrid({ events, dayStart, dayEnd, onEventClick }:
                     style={{ top, height }}
                   >
                     <div className="text-[11px] font-semibold leading-tight truncate">
-                      <span className="mr-1">{meta.emoji}</span>{ev.title}
+                      <span className="mr-1">{emoji}</span>{ev.title}
                     </div>
                     {height > 32 && (
                       <div className="text-[10px] opacity-80 mt-0.5">

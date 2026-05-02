@@ -1,21 +1,27 @@
 import { useState } from "react";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Button } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Slider } from "@/components/ui/slider";
 import { Switch } from "@/components/ui/switch";
 import { TimeSelect5 } from "@/components/ui/quantized-selects";
-import { Calendar, ListChecks, Settings2, Plus, Trash2, Sparkles } from "lucide-react";
+import { Calendar, CalendarDays, ListChecks, Settings2, Plus, Trash2 } from "lucide-react";
 import { TasksStep } from "@/components/aria/tasks-step";
-import { AriaState, CATEGORY_META, Category, DAYS, DayKey, FixedBlock } from "@/lib/aria-types";
+import { AriaState, CATEGORY_META, Category, DAYS, DayKey, FixedBlock, ScheduledEvent } from "@/lib/aria-types";
 import { uid } from "@/lib/aria-storage";
 import { cn } from "@/lib/utils";
 
 interface Props {
   open: boolean;
   initial: AriaState;
-  onComplete: (state: AriaState) => void;
+  onComplete: (state: AriaState) => void | Promise<void>;
+  /** Re-open after onboarding to edit fixed blocks, tasks, and preferences */
+  variant?: "onboarding" | "settings" | "newUser";
+  /** When variant is settings or newUser: overlay / Escape / close — parent should set open false */
+  onRequestClose?: () => void;
 }
 
 const STEPS = [
@@ -24,8 +30,17 @@ const STEPS = [
   { id: 3, title: "Your preferences", icon: Settings2, desc: "A few small details that shape how Aria plans." },
 ];
 
-export default function OnboardingWizard({ open, initial, onComplete }: Props) {
+export default function OnboardingWizard({
+  open,
+  initial,
+  onComplete,
+  variant = "onboarding",
+  onRequestClose,
+}: Props) {
+  const isSettings = variant === "settings";
+  const isNewUser = variant === "newUser";
   const [step, setStep] = useState(1);
+  const [settingsTab, setSettingsTab] = useState<"fixed" | "tasks" | "preferences">("preferences");
   const [fixedBlocks, setFixedBlocks] = useState<FixedBlock[]>(
     initial.fixedBlocks.length
       ? initial.fixedBlocks
@@ -39,70 +54,136 @@ export default function OnboardingWizard({ open, initial, onComplete }: Props) {
   const current = STEPS[step - 1];
 
   const finish = () => {
-    onComplete({
+    void onComplete({
       ...initial,
       onboarded: true,
       fixedBlocks,
       tasks,
       customTaskCategories,
       preferences: prefs,
+      /** Drop AI-placed flex/tentative events so the calendar matches new fixed blocks & tasks until the next generate/replan. */
+      ...(isSettings ? { events: [] as ScheduledEvent[] } : {}),
     });
   };
 
+  const locked = variant === "onboarding";
+
   return (
-    <Dialog open={open}>
+    <Dialog
+      open={open}
+      onOpenChange={(nextOpen) => {
+        if (!nextOpen && !locked) {
+          onRequestClose?.();
+        }
+      }}
+    >
       <DialogContent
-        className="max-w-2xl p-0 gap-0 overflow-hidden [&>button]:hidden"
-        onPointerDownOutside={(e) => e.preventDefault()}
-        onEscapeKeyDown={(e) => e.preventDefault()}
+        className={cn(
+          "flex max-h-[90vh] max-w-2xl flex-col gap-0 overflow-hidden p-0",
+          locked && "[&>button]:hidden",
+        )}
+        onPointerDownOutside={locked ? (e) => e.preventDefault() : undefined}
+        onEscapeKeyDown={locked ? (e) => e.preventDefault() : undefined}
       >
-        <div className="px-7 pt-7 pb-4">
-          <div className="flex items-center gap-3 mb-4">
-            <div className="h-10 w-10 rounded-xl bg-primary/10 grid place-items-center text-primary">
-              <current.icon className="h-5 w-5" />
-            </div>
-            <div className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
-              Step {step} of {STEPS.length}
-            </div>
-          </div>
-          <DialogHeader className="space-y-1.5 text-left">
-            <DialogTitle className="font-display text-3xl">{current.title}</DialogTitle>
-            <DialogDescription className="text-base">{current.desc}</DialogDescription>
-          </DialogHeader>
-          <Progress value={progress} className="mt-5 h-1.5" />
-        </div>
-
-        <div className="px-7 py-5 max-h-[55vh] overflow-y-auto">
-          {step === 1 && <FixedStep blocks={fixedBlocks} setBlocks={setFixedBlocks} />}
-          {step === 2 && (
-            <TasksStep
-              tasks={tasks}
-              setTasks={setTasks}
-              customTaskCategories={customTaskCategories}
-              setCustomTaskCategories={setCustomTaskCategories}
-            />
-          )}
-          {step === 3 && <PrefsStep prefs={prefs} setPrefs={setPrefs} />}
-        </div>
-
-        <div className="px-7 py-4 border-t bg-muted/30 flex items-center justify-between">
-          <Button
-            variant="ghost"
-            disabled={step === 1}
-            onClick={() => setStep((s) => Math.max(1, s - 1))}
+        {isSettings ? (
+          <Tabs
+            value={settingsTab}
+            onValueChange={(v) => setSettingsTab(v as "fixed" | "tasks" | "preferences")}
+            className="flex min-h-0 flex-1 flex-col"
           >
-            Back
-          </Button>
-          {step < STEPS.length ? (
-            <Button onClick={() => setStep((s) => s + 1)}>
-              Continue
-            </Button>
-          ) : (
-            <Button onClick={finish} className="gap-2">
-              <Sparkles className="h-4 w-4" /> Open Aria
-            </Button>
-          )}
-        </div>
+            <div className="shrink-0 border-b bg-muted/20 px-7 pb-4 pt-7">
+              <DialogHeader className="space-y-1.5 text-left">
+                <DialogTitle className="font-display text-2xl sm:text-3xl">Schedule setup</DialogTitle>
+                <DialogDescription className="text-sm sm:text-base">
+                  Jump to any section. Save when you&apos;re done—Aria will replan if you have tasks.
+                </DialogDescription>
+              </DialogHeader>
+              <TabsList className="mt-5 grid h-auto w-full grid-cols-3 gap-1.5 rounded-lg bg-muted p-1.5">
+                <TabsTrigger value="fixed" className="text-xs sm:text-sm">
+                  Fixed
+                </TabsTrigger>
+                <TabsTrigger value="tasks" className="text-xs sm:text-sm">
+                  Tasks
+                </TabsTrigger>
+                <TabsTrigger value="preferences" className="text-xs sm:text-sm">
+                  Preferences
+                </TabsTrigger>
+              </TabsList>
+            </div>
+
+            <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-7 py-5">
+              <TabsContent value="fixed" className="m-0 mt-0 outline-none focus-visible:ring-0 focus-visible:ring-offset-0">
+                <FixedStep blocks={fixedBlocks} setBlocks={setFixedBlocks} />
+              </TabsContent>
+              <TabsContent value="tasks" className="m-0 mt-0 outline-none focus-visible:ring-0 focus-visible:ring-offset-0">
+                <TasksStep
+                  tasks={tasks}
+                  setTasks={setTasks}
+                  customTaskCategories={customTaskCategories}
+                  setCustomTaskCategories={setCustomTaskCategories}
+                />
+              </TabsContent>
+              <TabsContent value="preferences" className="m-0 mt-0 outline-none focus-visible:ring-0 focus-visible:ring-offset-0">
+                <PrefsStep prefs={prefs} setPrefs={setPrefs} prefsVariant="settings" />
+              </TabsContent>
+            </div>
+
+            <div className="flex shrink-0 items-center justify-between gap-3 border-t bg-muted/30 px-7 py-4">
+              <Button type="button" variant="ghost" onClick={() => onRequestClose?.()}>
+                Cancel
+              </Button>
+              <Button type="button" onClick={finish} className="gap-2">
+                <CalendarDays className="h-4 w-4" /> Save changes
+              </Button>
+            </div>
+          </Tabs>
+        ) : (
+          <>
+            <div className="shrink-0 px-7 pt-7 pb-4">
+              <div className="mb-4 flex items-center gap-3">
+                <div className="grid h-10 w-10 place-items-center rounded-xl bg-primary/10 text-primary">
+                  <current.icon className="h-5 w-5" />
+                </div>
+                <div className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
+                  Step {step} of {STEPS.length}
+                </div>
+              </div>
+              <DialogHeader className="space-y-1.5 text-left">
+                <DialogTitle className="font-display text-3xl">{current.title}</DialogTitle>
+                <DialogDescription className="text-base">
+                  {isNewUser ? `New profile — ${current.desc}` : current.desc}
+                </DialogDescription>
+              </DialogHeader>
+              <Progress value={progress} className="mt-5 h-1.5" />
+            </div>
+
+            <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-7 py-5">
+              {step === 1 && <FixedStep blocks={fixedBlocks} setBlocks={setFixedBlocks} />}
+              {step === 2 && (
+                <TasksStep
+                  tasks={tasks}
+                  setTasks={setTasks}
+                  customTaskCategories={customTaskCategories}
+                  setCustomTaskCategories={setCustomTaskCategories}
+                />
+              )}
+              {step === 3 && <PrefsStep prefs={prefs} setPrefs={setPrefs} prefsVariant="onboarding" />}
+            </div>
+
+            <div className="flex shrink-0 items-center justify-between border-t bg-muted/30 px-7 py-4">
+              <Button variant="ghost" disabled={step === 1} onClick={() => setStep((s) => Math.max(1, s - 1))}>
+                Back
+              </Button>
+              {step < STEPS.length ? (
+                <Button onClick={() => setStep((s) => s + 1)}>Continue</Button>
+              ) : (
+                <Button onClick={finish} className="gap-2">
+                  <CalendarDays className="h-4 w-4" /> Open Aria
+                </Button>
+              )}
+            </div>
+          </>
+        )}
       </DialogContent>
     </Dialog>
   );
@@ -185,11 +266,27 @@ function FixedStep({ blocks, setBlocks }: { blocks: FixedBlock[]; setBlocks: (b:
 
 /* ---------- Step 3 ---------- */
 
-function PrefsStep({ prefs, setPrefs }: { prefs: AriaState["preferences"]; setPrefs: (p: AriaState["preferences"]) => void }) {
+function PrefsStep({
+  prefs,
+  setPrefs,
+  prefsVariant,
+}: {
+  prefs: AriaState["preferences"];
+  setPrefs: (p: AriaState["preferences"]) => void;
+  prefsVariant: "onboarding" | "settings";
+}) {
+  const showCalendarDisplayOnly = prefsVariant === "settings";
+
   return (
     <div className="space-y-4">
       <div className="rounded-xl border bg-card p-4 space-y-3">
-        <Label className="text-sm font-medium">Preferred morning start</Label>
+        <div className="space-y-1">
+          <Label className="text-sm font-medium">When flexible tasks can start</Label>
+          <p className="text-xs text-muted-foreground leading-snug">
+            Earliest time Aria should usually begin scheduling flexible tasks. Fixed blocks, evening protection, and per-task times still apply.
+            {showCalendarDisplayOnly ? <> Not when your calendar grid begins.</> : null}
+          </p>
+        </div>
         <TimeSelect5
           value={prefs.morningStart}
           onChange={(v) => setPrefs({ ...prefs, morningStart: v })}
@@ -198,18 +295,60 @@ function PrefsStep({ prefs, setPrefs }: { prefs: AriaState["preferences"]; setPr
         />
       </div>
 
-      <ToggleRow
-        title="Cluster errands"
-        desc="Group errands & admin into one chunk instead of spreading them out."
-        checked={prefs.clusterErrands}
-        onChange={(v) => setPrefs({ ...prefs, clusterErrands: v })}
-      />
-      <ToggleRow
-        title="Protect evenings"
-        desc="Keep weeknight time after 7pm free for rest unless asked."
-        checked={prefs.protectEvenings}
-        onChange={(v) => setPrefs({ ...prefs, protectEvenings: v })}
-      />
+      <div className="rounded-xl border bg-card p-4 space-y-4">
+        <div className="space-y-1">
+          <Label className="text-sm font-medium">Space between tasks</Label>
+          <p className="text-xs text-muted-foreground leading-snug">
+            How much breathing room you usually want between flexible tasks on the same day. Aria will try to leave at least this many minutes free in between—when fixed blocks, priorities, free days, and other rules allow it, tasks can sit closer together.
+          </p>
+        </div>
+        <Slider
+          aria-label="Preferred minimum gap between flexible tasks in minutes"
+          value={[prefs.preferredGapBetweenTasksMin]}
+          min={0}
+          max={120}
+          step={5}
+          onValueChange={(v) =>
+            setPrefs({ ...prefs, preferredGapBetweenTasksMin: typeof v[0] === "number" ? v[0] : 0 })
+          }
+          className="w-full max-w-md py-1"
+        />
+        <div className="flex items-center justify-between gap-3 text-xs text-muted-foreground">
+          <span>0 (tight)</span>
+          <span className="tabular-nums font-medium text-foreground">
+            {prefs.preferredGapBetweenTasksMin} min usual gap
+          </span>
+          <span>120 min</span>
+        </div>
+      </div>
+      <div className="rounded-xl border bg-card p-4 space-y-3">
+        <div className="flex items-start justify-between gap-4">
+          <div>
+            <div className="font-medium text-sm">Protect evenings</div>
+            <div className="text-xs text-muted-foreground mt-0.5">
+              On weeknights (Mon–Fri), avoid placing flexible tasks after the time you pick—unless your notes say otherwise.
+            </div>
+          </div>
+          <Switch
+            checked={prefs.protectEvenings}
+            onCheckedChange={(v) => setPrefs({ ...prefs, protectEvenings: v })}
+          />
+        </div>
+        {prefs.protectEvenings ? (
+          <div className="space-y-2 border-t border-border/60 pt-3">
+            <Label className="text-sm font-medium">Evening quiet starts at</Label>
+            <p className="text-xs text-muted-foreground leading-snug">
+              Flexible tasks won&apos;t begin at or after this time on weekdays.
+            </p>
+            <TimeSelect5
+              value={prefs.protectEveningsFrom}
+              onChange={(v) => setPrefs({ ...prefs, protectEveningsFrom: v })}
+              className="max-w-[260px]"
+              triggerClassName="h-10 w-full"
+            />
+          </div>
+        ) : null}
+      </div>
 
       <div className="rounded-xl border bg-card p-4 space-y-3">
         <div>
@@ -243,33 +382,32 @@ function PrefsStep({ prefs, setPrefs }: { prefs: AriaState["preferences"]; setPr
         </div>
       </div>
 
-      <div className="grid grid-cols-2 gap-3">
-        <div className="rounded-xl border bg-card p-4 space-y-2">
-          <Label className="text-sm font-medium">Day starts</Label>
-          <TimeSelect5 value={prefs.dayStart} onChange={(v) => setPrefs({ ...prefs, dayStart: v })} triggerClassName="h-10 w-full" />
+      {showCalendarDisplayOnly ? (
+        <div className="rounded-xl border border-dashed border-muted-foreground/35 bg-muted/20 p-4 space-y-3">
+          <div className="space-y-1">
+            <Label className="text-sm font-medium">Calendar view (display only)</Label>
+            <p className="text-xs text-muted-foreground leading-snug">
+              Chooses which hours show on the week calendar (display only).
+              When tasks actually run still follows fixed blocks, task choices, and the scheduling options above—not these times.
+            </p>
+          </div>
+          <div className="grid grid-cols-2 gap-3 pt-1">
+            <div className="rounded-lg border bg-background p-3 space-y-2">
+              <Label className="text-xs font-medium text-muted-foreground">Grid starts at</Label>
+              <TimeSelect5 value={prefs.dayStart} onChange={(v) => setPrefs({ ...prefs, dayStart: v })} triggerClassName="h-10 w-full" />
+            </div>
+            <div className="rounded-lg border bg-background p-3 space-y-2">
+              <Label className="text-xs font-medium text-muted-foreground">Grid ends at</Label>
+              <TimeSelect5
+                value={prefs.dayEnd}
+                onChange={(v) => setPrefs({ ...prefs, dayEnd: v })}
+                triggerClassName="h-10 w-full"
+                allowMidnightEnd
+              />
+            </div>
+          </div>
         </div>
-        <div className="rounded-xl border bg-card p-4 space-y-2">
-          <Label className="text-sm font-medium">Day ends</Label>
-          <TimeSelect5
-            value={prefs.dayEnd}
-            onChange={(v) => setPrefs({ ...prefs, dayEnd: v })}
-            triggerClassName="h-10 w-full"
-            allowMidnightEnd
-          />
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function ToggleRow({ title, desc, checked, onChange }: { title: string; desc: string; checked: boolean; onChange: (v: boolean) => void }) {
-  return (
-    <div className="flex items-start justify-between gap-4 rounded-xl border bg-card p-4">
-      <div>
-        <div className="font-medium text-sm">{title}</div>
-        <div className="text-xs text-muted-foreground mt-0.5">{desc}</div>
-      </div>
-      <Switch checked={checked} onCheckedChange={onChange} />
+      ) : null}
     </div>
   );
 }

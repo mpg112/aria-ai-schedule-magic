@@ -1,5 +1,15 @@
-import { Category, DayKey, FixedBlock, ScheduledEvent } from "./aria-types";
+import {
+  CATEGORY_META,
+  Category,
+  CustomTaskCategory,
+  DayKey,
+  FixedBlock,
+  FlexibleTask,
+  ScheduledEvent,
+} from "./aria-types";
 import { uid } from "./aria-storage";
+
+const CAL_VIEW_PAD_MIN = 30;
 
 // "HH:MM" -> minutes
 export function toMin(t: string): number {
@@ -31,6 +41,88 @@ export function fixedBlocksToEvents(blocks: FixedBlock[]): ScheduledEvent[] {
     }
   }
   return out;
+}
+
+function emojiForTask(task: FlexibleTask, customTaskCategories: CustomTaskCategory[]): string {
+  if (task.customCategoryId) {
+    const c = customTaskCategories.find((x) => x.id === task.customCategoryId);
+    if (c?.emoji) return c.emoji;
+  }
+  return CATEGORY_META[task.category].emoji;
+}
+
+/** First task per normalized title wins (duplicate titles share one icon). */
+function taskByTitleLookup(tasks: FlexibleTask[]): Map<string, FlexibleTask> {
+  const map = new Map<string, FlexibleTask>();
+  for (const t of tasks) {
+    const k = t.title.trim().toLowerCase();
+    if (!map.has(k)) map.set(k, t);
+  }
+  return map;
+}
+
+/** Attach `emoji` to flexible/tentative events when the title matches a task (custom category icon or built-in). */
+export function enrichEventsWithTaskEmojis(
+  events: ScheduledEvent[],
+  tasks: FlexibleTask[],
+  customTaskCategories: CustomTaskCategory[],
+): ScheduledEvent[] {
+  if (!tasks.length) return events;
+  const lookup = taskByTitleLookup(tasks);
+  return events.map((ev) => {
+    if (ev.kind === "fixed") return ev;
+    const task = lookup.get(ev.title.trim().toLowerCase());
+    if (!task) return ev;
+    return { ...ev, emoji: emojiForTask(task, customTaskCategories) };
+  });
+}
+
+/**
+ * Week grid visible range: user prefs (display) widened only when an event starts before
+ * dayStart or ends after dayEnd so fixed blocks and flex tasks are never clipped.
+ */
+export function mergeDayBoundsForCalendar(
+  dayStartPref: string,
+  dayEndPref: string,
+  events: ScheduledEvent[],
+): { dayStart: string; dayEnd: string } {
+  let prefMin = toMin(dayStartPref.trim() ? dayStartPref : DEFAULT_DAY_START);
+  let prefMax = toMin(dayEndPref.trim() ? dayEndPref : DEFAULT_DAY_END);
+  if (!Number.isFinite(prefMin)) prefMin = toMin(DEFAULT_DAY_START);
+  if (!Number.isFinite(prefMax)) prefMax = toMin(DEFAULT_DAY_END);
+  if (dayEndPref.trim() === "24:00") prefMax = 24 * 60;
+
+  let minM = prefMin;
+  let maxM = prefMax;
+  let sawEvent = false;
+  let evtMin = Infinity;
+  let evtMax = -Infinity;
+
+  for (const ev of events) {
+    const s = toMin(ev.start);
+    let e = toMin(ev.end);
+    if (!Number.isFinite(s)) continue;
+    if (!Number.isFinite(e) || e <= s) e = s + 60;
+    sawEvent = true;
+    evtMin = Math.min(evtMin, s);
+    evtMax = Math.max(evtMax, e);
+  }
+
+  if (sawEvent && Number.isFinite(evtMin)) {
+    minM = Math.min(prefMin, evtMin - CAL_VIEW_PAD_MIN);
+  }
+  if (sawEvent && evtMax >= 0) {
+    maxM = Math.max(prefMax, evtMax + CAL_VIEW_PAD_MIN);
+  }
+
+  minM = Math.max(0, Math.floor(minM / 60) * 60);
+  maxM = Math.min(24 * 60, Math.ceil(maxM / 60) * 60);
+  if (maxM <= minM) maxM = Math.min(24 * 60, minM + 60);
+
+  return {
+    dayStart: fromMin(minM),
+    dayEnd: maxM >= 24 * 60 ? "24:00" : fromMin(maxM),
+  };
 }
 
 export function categoryClasses(c: Category) {

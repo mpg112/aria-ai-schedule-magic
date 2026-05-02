@@ -48,8 +48,9 @@ export function getDemoState(): AriaState {
     ].map((t) => normalizeFlexibleTask(t as FlexibleTask)),
     preferences: {
       morningStart: "07:00",
-      clusterErrands: false,
+      preferredGapBetweenTasksMin: 15,
       protectEvenings: false,
+      protectEveningsFrom: "19:00",
       freeDays: [],
       dayStart: "07:00",
       dayEnd: "24:00",

@@ -11,6 +11,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Checkbox } from "@/components/ui/checkbox";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { DurationSelect5, TimeSelect5 } from "@/components/ui/quantized-selects";
@@ -38,10 +39,38 @@ import { cn } from "@/lib/utils";
 /** Built-in category sections shown in onboarding (templates + tasks). */
 const BUILTIN_TASK_SECTIONS: Category[] = [...SUGGESTED_CATEGORIES, "work", "other"];
 
+/** Curated icons for “new category” (picker grid). */
+const CATEGORY_ICON_CHOICES = [
+  "🐶", // dog
+  "🐱", // cat
+  "🎯", // bullseye
+  "⭐", // star
+  "✈️", // plane
+  "🌸", // flower
+  "⚽", // soccer ball
+  "🎨", // art palette
+  "❤️", // red heart
+  "🥳", // party hat / celebration
+  "👶", // baby
+  "💄", // lipstick
+  "🐟", // fish
+  "🌳", // tree
+  "☀️", // sun
+  "🌙", // moon
+  "🍽️", // utensils
+  "🎸", // guitar
+  "🚗", // car
+  "📌", // pin — neutral catch-all (e.g. misc / other)
+] as const;
+
 const TIMES_PER_WEEK_OPTIONS = Array.from({ length: 7 }, (_, i) => {
   const n = i + 1;
   return { v: String(n), l: `${n}×` };
 });
+
+const TIMES_PER_DAY_OPTIONS = [1, 2, 3, 4].map((n) => ({ v: String(n), l: `${n}×` }));
+
+const DAILY_SLOT_LABELS = ["1st", "2nd", "3rd", "4th"] as const;
 
 type GroupValue = `b:${Category}` | `c:${string}`;
 
@@ -69,6 +98,7 @@ function newTaskTemplate(category: Category, customCategoryId?: string): Flexibl
     ...(customCategoryId ? { customCategoryId } : {}),
     durationMin: 60,
     frequency: "weekly",
+    timesPerDay: 1,
     timesPerWeekMin: 1,
     timesPerWeekMax: 1,
     priority: "medium",
@@ -122,15 +152,19 @@ function frequencyMeta(t: FlexibleTask): string {
     if (a === b) return `${a}×/wk`;
     return `${a}–${b}×/wk`;
   }
+  if (t.frequency === "daily") {
+    return t.timesPerDay === 1 ? "daily" : `${t.timesPerDay}×/day`;
+  }
   return t.frequency;
 }
 
 function metaLine(t: FlexibleTask) {
   const time =
-    t.preferredTimeStyle === "windows" && t.preferredTimeWindows.length > 0
+    t.frequency === "daily" || (t.preferredTimeStyle === "windows" && t.preferredTimeWindows.length > 0)
       ? t.preferredTimeWindows.map((w) => `${w.start}–${w.end}`).join(", ")
       : t.preferredTimeOfDay;
-  const days = t.preferredWeekdays.length ? t.preferredWeekdays.join("·") : "any";
+  const days =
+    t.frequency === "daily" ? "every day" : t.preferredWeekdays.length ? t.preferredWeekdays.join("·") : "any";
   const note = t.schedulingNotes.trim() ? " · ✎" : "";
   return `${t.durationMin}m · ${time} · ${days} · ${frequencyMeta(t)} · ${t.priority}${note}`;
 }
@@ -143,17 +177,18 @@ function suggestedPreviewMeta(s: SuggestedTask): string {
       category: s.category,
       durationMin: s.durationMin,
       frequency: s.frequency,
+      timesPerDay: s.timesPerDay ?? 1,
       ...(s.timesPerWeekMin != null ? { timesPerWeekMin: s.timesPerWeekMin } : {}),
       ...(s.timesPerWeekMax != null ? { timesPerWeekMax: s.timesPerWeekMax } : {}),
       priority: "medium",
-      preferredTimeStyle: "preset",
+      preferredTimeStyle: s.preferredTimeStyle ?? "preset",
       preferredTimeOfDay: s.preferredTimeOfDay,
-      preferredTimeWindows: [],
+      preferredTimeWindows: s.preferredTimeWindows ?? [],
       preferredWeekdays: [],
       monthWeekOrdinal: "any",
       monthDaysOfMonth: [],
       schedulingNotes: "",
-    }),
+    } as FlexibleTask),
   );
 }
 
@@ -272,7 +307,8 @@ function TaskEditorDialog({
     return [...built, ...cust];
   }, [customTaskCategories]);
 
-  const u = (patch: Partial<FlexibleTask>) => setDraft((d) => (d ? { ...d, ...patch } : d));
+  const u = (patch: Partial<FlexibleTask>) =>
+    setDraft((d) => (d ? normalizeFlexibleTask({ ...d, ...patch } as FlexibleTask) : d));
 
   const save = () => {
     if (!draft) return;
@@ -314,20 +350,23 @@ function TaskEditorDialog({
   return (
     <Dialog modal={false} open={open} onOpenChange={onOpenChange}>
       <DialogContent
-        className="sm:max-w-[440px] max-h-[min(92vh,680px)] overflow-y-auto z-[120] p-4 gap-3"
+        className="!flex min-h-0 max-h-[min(92vh,680px)] w-full !max-w-[440px] flex-col gap-0 overflow-hidden p-0 z-[120]"
         onInteractOutside={guardDialogAgainstFloatingUi}
         onFocusOutside={guardDialogAgainstFloatingUi}
         onPointerDownOutside={guardDialogAgainstFloatingUi}
       >
-        <DialogHeader className="space-y-1 pb-0">
+        <DialogHeader className="shrink-0 space-y-1 border-b border-border/60 px-4 pb-3 pt-4">
           <DialogTitle className="font-display text-base">{isCreate ? "Add task" : "Edit task"}</DialogTitle>
           <DialogDescription className="text-[11px] leading-snug">
             Frequency first, then days & times. Notes go to the AI verbatim.
           </DialogDescription>
         </DialogHeader>
+        <div
+          className="min-h-0 max-h-[min(calc(92vh-11rem),560px)] flex-1 overflow-y-auto overscroll-contain px-4 py-3 [-webkit-overflow-scrolling:touch] touch-pan-y"
+          onWheel={(e) => e.stopPropagation()}
+        >
         {draft ? (
-          <>
-            <div className="space-y-2.5">
+          <div className="space-y-2.5">
               <div className="space-y-1">
                 <Label className="text-[10px] text-muted-foreground">Title</Label>
                 <Input
@@ -350,7 +389,7 @@ function TaskEditorDialog({
                     { v: "once", l: "Once" },
                     { v: "weekly", l: "Weekly" },
                     { v: "monthly", l: "Monthly" },
-                    { v: "as-needed", l: "As needed" },
+                    { v: "daily", l: "Daily" },
                   ]}
                 />
                 <SmallSelect
@@ -394,6 +433,24 @@ function TaskEditorDialog({
                 </div>
               ) : null}
 
+              {draft.frequency === "daily" ? (
+                <div className="space-y-1">
+                  <SmallSelect
+                    dense
+                    label="Times per day"
+                    value={String(draft.timesPerDay)}
+                    onChange={(v) => {
+                      const n = parseInt(v, 10);
+                      u({ timesPerDay: n });
+                    }}
+                    options={TIMES_PER_DAY_OPTIONS}
+                  />
+                  <p className="text-[10px] text-muted-foreground leading-tight">
+                    Each day you get this many sessions (e.g. dog walks). You’ll set one time range per session below.
+                  </p>
+                </div>
+              ) : null}
+
               <div className="grid grid-cols-2 gap-2">
                 <SmallSelect
                   dense
@@ -415,90 +472,137 @@ function TaskEditorDialog({
 
               <div className="rounded-md border border-border/80 bg-muted/20 px-2 py-2 space-y-2">
                 <Label className="text-[10px] uppercase tracking-wide text-muted-foreground">When you prefer to do it</Label>
-                <div className="flex rounded-md border border-border/60 bg-background p-0.5 gap-0.5">
-                  <button
-                    type="button"
-                    className={cn(
-                      "flex-1 rounded-sm py-1 text-[11px] font-medium transition-colors",
-                      draft.preferredTimeStyle === "preset" ? "bg-muted shadow-sm" : "text-muted-foreground hover:text-foreground",
-                    )}
-                    onClick={() => u({ preferredTimeStyle: "preset" as PreferredTimeStyle })}
-                  >
-                    Part of day
-                  </button>
-                  <button
-                    type="button"
-                    className={cn(
-                      "flex-1 rounded-sm py-1 text-[11px] font-medium transition-colors",
-                      draft.preferredTimeStyle === "windows" ? "bg-muted shadow-sm" : "text-muted-foreground hover:text-foreground",
-                    )}
-                    onClick={() =>
-                      u({
-                        preferredTimeStyle: "windows" as PreferredTimeStyle,
-                        preferredTimeWindows:
-                          draft.preferredTimeWindows.length > 0
-                            ? draft.preferredTimeWindows
-                            : [{ start: "09:00", end: "11:00" }],
-                      })
-                    }
-                  >
-                    Time ranges
-                  </button>
-                </div>
-                {draft.preferredTimeStyle === "preset" ? (
-                  <SmallSelect
-                    dense
-                    label="General time"
-                    value={draft.preferredTimeOfDay}
-                    onChange={(v) => u({ preferredTimeOfDay: v as TimeOfDay })}
-                    options={[
-                      { v: "any", l: "Any" },
-                      { v: "morning", l: "Morning" },
-                      { v: "afternoon", l: "Afternoon" },
-                      { v: "evening", l: "Evening" },
-                    ]}
-                  />
-                ) : (
+                {draft.frequency === "daily" ? (
                   <div className="space-y-1.5">
+                    <p className="text-[10px] text-muted-foreground leading-tight">
+                      Set one time range for each daily occurrence (order matches 1st, 2nd, …).
+                    </p>
                     {draft.preferredTimeWindows.map((w, i) => (
-                      <div key={i} className="flex flex-wrap items-end gap-1.5">
-                        <div className="grid grid-cols-2 gap-1.5 flex-1 min-w-[200px]">
+                      <div key={i} className="space-y-1 rounded-md border border-border/50 bg-background/60 px-2 py-1.5">
+                        <span className="text-[10px] font-medium text-muted-foreground">
+                          {DAILY_SLOT_LABELS[i] ?? `${i + 1}th`} time in the day
+                        </span>
+                        <div className="grid grid-cols-2 gap-1.5">
                           <div className="space-y-0.5">
                             <span className="text-[10px] text-muted-foreground">From</span>
-                            <TimeSelect5 value={w.start} onChange={(v) => patchWindow(draft, u, i, { start: v })} triggerClassName="h-8 w-full text-xs" />
+                            <TimeSelect5
+                              value={w.start}
+                              onChange={(v) => patchWindow(draft, u, i, { start: v })}
+                              triggerClassName="h-8 w-full text-xs"
+                            />
                           </div>
                           <div className="space-y-0.5">
                             <span className="text-[10px] text-muted-foreground">To</span>
-                            <TimeSelect5 value={w.end} onChange={(v) => patchWindow(draft, u, i, { end: v })} triggerClassName="h-8 w-full text-xs" />
+                            <TimeSelect5
+                              value={w.end}
+                              onChange={(v) => patchWindow(draft, u, i, { end: v })}
+                              triggerClassName="h-8 w-full text-xs"
+                            />
                           </div>
                         </div>
-                        <Button
-                          type="button"
-                          variant="ghost"
-                          size="sm"
-                          className="h-8 px-2 text-[11px] shrink-0"
-                          disabled={draft.preferredTimeWindows.length <= 1}
-                          onClick={() => removeWindow(draft, u, i)}
-                        >
-                          Remove
-                        </Button>
                       </div>
                     ))}
-                    <Button
-                      type="button"
-                      variant="outline"
-                      size="sm"
-                      className="h-7 text-[11px] w-full"
-                      disabled={draft.preferredTimeWindows.length >= 4}
-                      onClick={() =>
-                        u({
-                          preferredTimeWindows: [...draft.preferredTimeWindows, { start: "15:00", end: "17:00" }],
-                        })
-                      }
-                    >
-                      + Add range
-                    </Button>
                   </div>
+                ) : (
+                  <>
+                    <div className="flex rounded-md border border-border/60 bg-background p-0.5 gap-0.5">
+                      <button
+                        type="button"
+                        className={cn(
+                          "flex-1 rounded-sm py-1 text-[11px] font-medium transition-colors",
+                          draft.preferredTimeStyle === "preset"
+                            ? "bg-muted shadow-sm"
+                            : "text-muted-foreground hover:text-foreground",
+                        )}
+                        onClick={() => u({ preferredTimeStyle: "preset" as PreferredTimeStyle })}
+                      >
+                        Part of day
+                      </button>
+                      <button
+                        type="button"
+                        className={cn(
+                          "flex-1 rounded-sm py-1 text-[11px] font-medium transition-colors",
+                          draft.preferredTimeStyle === "windows"
+                            ? "bg-muted shadow-sm"
+                            : "text-muted-foreground hover:text-foreground",
+                        )}
+                        onClick={() =>
+                          u({
+                            preferredTimeStyle: "windows" as PreferredTimeStyle,
+                            preferredTimeWindows:
+                              draft.preferredTimeWindows.length > 0
+                                ? draft.preferredTimeWindows
+                                : [{ start: "09:00", end: "11:00" }],
+                          })
+                        }
+                      >
+                        Time ranges
+                      </button>
+                    </div>
+                    {draft.preferredTimeStyle === "preset" ? (
+                      <SmallSelect
+                        dense
+                        label="General time"
+                        value={draft.preferredTimeOfDay}
+                        onChange={(v) => u({ preferredTimeOfDay: v as TimeOfDay })}
+                        options={[
+                          { v: "any", l: "Any" },
+                          { v: "morning", l: "Morning" },
+                          { v: "afternoon", l: "Afternoon" },
+                          { v: "evening", l: "Evening" },
+                        ]}
+                      />
+                    ) : (
+                      <div className="space-y-1.5">
+                        {draft.preferredTimeWindows.map((w, i) => (
+                          <div key={i} className="flex flex-wrap items-end gap-1.5">
+                            <div className="grid grid-cols-2 gap-1.5 flex-1 min-w-[200px]">
+                              <div className="space-y-0.5">
+                                <span className="text-[10px] text-muted-foreground">From</span>
+                                <TimeSelect5
+                                  value={w.start}
+                                  onChange={(v) => patchWindow(draft, u, i, { start: v })}
+                                  triggerClassName="h-8 w-full text-xs"
+                                />
+                              </div>
+                              <div className="space-y-0.5">
+                                <span className="text-[10px] text-muted-foreground">To</span>
+                                <TimeSelect5
+                                  value={w.end}
+                                  onChange={(v) => patchWindow(draft, u, i, { end: v })}
+                                  triggerClassName="h-8 w-full text-xs"
+                                />
+                              </div>
+                            </div>
+                            <Button
+                              type="button"
+                              variant="ghost"
+                              size="sm"
+                              className="h-8 px-2 text-[11px] shrink-0"
+                              disabled={draft.preferredTimeWindows.length <= 1}
+                              onClick={() => removeWindow(draft, u, i)}
+                            >
+                              Remove
+                            </Button>
+                          </div>
+                        ))}
+                        <Button
+                          type="button"
+                          variant="outline"
+                          size="sm"
+                          className="h-7 text-[11px] w-full"
+                          disabled={draft.preferredTimeWindows.length >= 4}
+                          onClick={() =>
+                            u({
+                              preferredTimeWindows: [...draft.preferredTimeWindows, { start: "15:00", end: "17:00" }],
+                            })
+                          }
+                        >
+                          + Add range
+                        </Button>
+                      </div>
+                    )}
+                  </>
                 )}
               </div>
 
@@ -541,7 +645,7 @@ function TaskEditorDialog({
                 </div>
               ) : null}
 
-              {(draft.frequency === "once" || draft.frequency === "as-needed") && (
+              {draft.frequency === "once" && (
                 <WeekdayChips
                   label="If possible, prefer these days"
                   hint="Optional soft preference."
@@ -561,18 +665,20 @@ function TaskEditorDialog({
                 />
               </div>
             </div>
-            <DialogFooter className="gap-2 pt-1 sm:gap-2">
-              <Button variant="ghost" size="sm" className="h-8 text-xs" onClick={() => onOpenChange(false)}>
-                Cancel
-              </Button>
-              <Button size="sm" className="h-8 text-xs" onClick={save} disabled={!draft.title.trim()}>
-                Save
-              </Button>
-            </DialogFooter>
-          </>
         ) : (
-          <p className="text-xs text-muted-foreground py-6 text-center">Loading…</p>
+          <p className="py-6 text-center text-xs text-muted-foreground">Loading…</p>
         )}
+        </div>
+        {draft ? (
+          <DialogFooter className="shrink-0 gap-2 border-t border-border/60 px-4 py-3 sm:gap-2">
+            <Button variant="ghost" size="sm" className="h-8 text-xs" onClick={() => onOpenChange(false)}>
+              Cancel
+            </Button>
+            <Button size="sm" className="h-8 text-xs" onClick={save} disabled={!draft.title.trim()}>
+              Save
+            </Button>
+          </DialogFooter>
+        ) : null}
       </DialogContent>
     </Dialog>
   );
@@ -598,15 +704,17 @@ function AddCategoryDialog({
   onOpenChange: (v: boolean) => void;
   onCreate: (c: CustomTaskCategory) => void;
 }) {
-  const [emoji, setEmoji] = useState("📌");
+  const [emoji, setEmoji] = useState("🐶");
   const [label, setLabel] = useState("");
   const [paletteCategory, setPaletteCategory] = useState<Category>("other");
+  const [iconPickerOpen, setIconPickerOpen] = useState(false);
 
   useEffect(() => {
     if (open) {
-      setEmoji("📌");
+      setEmoji("🐶");
       setLabel("");
       setPaletteCategory("other");
+      setIconPickerOpen(false);
     }
   }, [open]);
 
@@ -616,7 +724,7 @@ function AddCategoryDialog({
     onCreate({
       id: uid(),
       label: name,
-      emoji: emoji.trim() || "📌",
+      emoji: emoji.trim() || "🐶",
       paletteCategory,
     });
     onOpenChange(false);
@@ -638,7 +746,47 @@ function AddCategoryDialog({
           <div className="grid grid-cols-[auto_1fr] gap-3 items-end">
             <div className="space-y-1.5">
               <Label className="text-xs">Icon</Label>
-              <Input value={emoji} onChange={(e) => setEmoji(e.target.value)} className="w-14 text-center text-lg px-1" maxLength={4} />
+              <Popover open={iconPickerOpen} onOpenChange={setIconPickerOpen}>
+                <PopoverTrigger asChild>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    className="h-11 w-11 shrink-0 rounded-lg p-0 text-2xl leading-none shadow-sm hover:bg-muted/80"
+                    aria-label="Choose category icon"
+                  >
+                    {emoji}
+                  </Button>
+                </PopoverTrigger>
+                <PopoverContent
+                  className="z-[300] w-[220px] p-2.5"
+                  align="start"
+                  sideOffset={6}
+                  onOpenAutoFocus={(e) => e.preventDefault()}
+                >
+                  <p className="mb-2 px-0.5 text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
+                    Pick one
+                  </p>
+                  <div className="grid grid-cols-5 gap-1">
+                    {CATEGORY_ICON_CHOICES.map((choice) => (
+                      <button
+                        key={choice}
+                        type="button"
+                        onClick={() => {
+                          setEmoji(choice);
+                          setIconPickerOpen(false);
+                        }}
+                        className={cn(
+                          "flex h-9 w-9 items-center justify-center rounded-md text-lg transition-colors hover:bg-muted",
+                          emoji === choice && "bg-primary/15 ring-2 ring-primary ring-offset-1 ring-offset-background",
+                        )}
+                        aria-label={`Use ${choice} as icon`}
+                      >
+                        {choice}
+                      </button>
+                    ))}
+                  </div>
+                </PopoverContent>
+              </Popover>
             </div>
             <div className="space-y-1.5">
               <Label className="text-xs">Name</Label>
