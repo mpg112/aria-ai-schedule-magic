@@ -7,7 +7,8 @@ import { componentTagger } from "lovable-tagger";
 export default defineConfig(({ mode }) => ({
   server: {
     host: "::",
-    port: 8080,
+    /** Default Vite port — avoids silent fallback when 8080 is taken (another app), which makes the app “disappear” if you keep opening the wrong URL. */
+    port: 5173,
     hmr: {
       overlay: false,
     },

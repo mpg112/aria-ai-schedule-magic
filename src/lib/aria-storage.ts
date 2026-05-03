@@ -1,10 +1,16 @@
 import {
   AriaState,
+  ChatMessage,
   EMPTY_STATE,
+  FixedBlock,
   FlexibleTask,
+  MealBreak,
   ProfilesRootState,
+  ScheduledEvent,
   UserProfile,
+  dedupeRepairFlexibleEventIds,
   normalizeFlexibleTask,
+  normalizeMealBreak,
   normalizePreferences,
 } from "./aria-types";
 
@@ -13,10 +19,26 @@ const KEY = "aria-state-v1";
 export const uid = () =>
   Math.random().toString(36).slice(2, 10) + Date.now().toString(36).slice(-4);
 
-function normalizeLoadedAria(parsed: Partial<AriaState> & Record<string, unknown>): AriaState {
+/** Normalize persisted or URL-imported Aria JSON into a full `AriaState`. */
+export function normalizeLoadedAria(parsed: Partial<AriaState> & Record<string, unknown>): AriaState {
+  const rawEvents = (parsed as { events?: unknown }).events;
+  const events = Array.isArray(rawEvents)
+    ? dedupeRepairFlexibleEventIds(rawEvents as ScheduledEvent[])
+    : EMPTY_STATE.events;
+
+  const rawFixed = (parsed as { fixedBlocks?: unknown }).fixedBlocks;
+  const fixedBlocks: FixedBlock[] = Array.isArray(rawFixed) ? (rawFixed as FixedBlock[]) : EMPTY_STATE.fixedBlocks;
+
+  const rawChat = (parsed as { chat?: unknown }).chat;
+  const chat: ChatMessage[] = Array.isArray(rawChat) ? (rawChat as ChatMessage[]) : EMPTY_STATE.chat;
+
+  const onboarded = typeof parsed.onboarded === "boolean" ? parsed.onboarded : EMPTY_STATE.onboarded;
+
   return {
     ...EMPTY_STATE,
     ...parsed,
+    onboarded,
+    fixedBlocks,
     preferences: normalizePreferences({ ...EMPTY_STATE.preferences, ...(parsed.preferences ?? {}) }),
     customTaskCategories: Array.isArray(parsed.customTaskCategories)
       ? parsed.customTaskCategories
@@ -24,6 +46,11 @@ function normalizeLoadedAria(parsed: Partial<AriaState> & Record<string, unknown
     tasks: Array.isArray(parsed.tasks)
       ? (parsed.tasks as FlexibleTask[]).map((t) => normalizeFlexibleTask(t))
       : EMPTY_STATE.tasks,
+    mealBreaks: Array.isArray((parsed as { mealBreaks?: unknown }).mealBreaks)
+      ? ((parsed as { mealBreaks: Partial<MealBreak>[] }).mealBreaks).map((x) => normalizeMealBreak(x))
+      : EMPTY_STATE.mealBreaks,
+    events,
+    chat,
   };
 }
 
@@ -59,7 +86,9 @@ export function createDefaultProfilesRoot(): ProfilesRootState {
 }
 
 function normalizeProfilesRoot(raw: ProfilesRootState): ProfilesRootState {
-  let profiles = (raw.profiles ?? []).map((p) => normalizeUserProfile(p as Record<string, unknown>));
+  let profiles = (raw.profiles ?? [])
+    .filter((p): p is Record<string, unknown> => p !== null && typeof p === "object" && !Array.isArray(p))
+    .map((p) => normalizeUserProfile(p));
   if (!profiles.length) profiles = createDefaultProfilesRoot().profiles;
   let activeProfileId =
     typeof raw.activeProfileId === "string" && raw.activeProfileId

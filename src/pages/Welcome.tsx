@@ -1,8 +1,17 @@
-import { Link } from "react-router-dom";
+import { Link, Navigate } from "react-router-dom";
 import { Button } from "@/components/ui/button";
 import AriaLogoMark from "@/components/aria/AriaLogoMark";
+import { setLaunchPreambleComplete } from "@/lib/launch-preamble";
+import { loadProfilesRoot } from "@/lib/aria-storage";
 
 export default function Welcome() {
+  const root = loadProfilesRoot();
+  const active =
+    root.profiles.find((p) => p.id === root.activeProfileId) ?? root.profiles[0];
+  if (active?.aria.onboarded) {
+    return <Navigate to="/app" replace />;
+  }
+
   return (
     <div className="min-h-screen bg-background flex flex-col items-center justify-center px-6 py-12">
       <div className="w-full max-w-lg text-center space-y-8">
@@ -22,6 +31,7 @@ export default function Welcome() {
           </Button>
           <Link
             to="/app"
+            onClick={() => setLaunchPreambleComplete()}
             className="text-sm text-muted-foreground underline-offset-4 hover:text-foreground hover:underline"
           >
             Already set up? Open your planner

@@ -1,9 +1,19 @@
-import { Link } from "react-router-dom";
+import { Link, Navigate, useNavigate } from "react-router-dom";
 import { Button } from "@/components/ui/button";
 import AriaLogoMark from "@/components/aria/AriaLogoMark";
 import { ArrowLeft, ArrowRight } from "lucide-react";
+import { setLaunchPreambleComplete } from "@/lib/launch-preamble";
+import { loadProfilesRoot } from "@/lib/aria-storage";
 
 export default function Intro() {
+  const navigate = useNavigate();
+  const root = loadProfilesRoot();
+  const active =
+    root.profiles.find((p) => p.id === root.activeProfileId) ?? root.profiles[0];
+  if (active?.aria.onboarded) {
+    return <Navigate to="/app" replace />;
+  }
+
   return (
     <div className="min-h-screen bg-background flex flex-col items-center justify-center px-6 py-12">
       <div className="w-full max-w-lg space-y-8">
@@ -22,16 +32,22 @@ export default function Intro() {
           <p className="text-base sm:text-lg text-muted-foreground leading-relaxed text-left sm:text-center">
             In the next steps, Aria will ask a few questions about your schedule so it can plan your week with you.
             You&apos;ll share things like fixed commitments (work, class, recurring blocks), flexible tasks you want to
-            fit in, any one-off events, and small preferences—morning start, quiet evenings, days you&apos;d like kept
-            clear, and similar details that shape how your calendar looks.
+            fit in, any one-off events, and small preferences—when flexible tasks can start on weekdays vs weekends,
+            quiet evenings, days you&apos;d like kept clear, and similar details that shape how your calendar looks.
           </p>
         </div>
         <div className="flex justify-center">
-          <Button asChild size="lg" className="min-w-[200px] rounded-xl shadow-soft gap-2">
-            <Link to="/app">
-              Ready? Let&apos;s go
-              <ArrowRight className="h-4 w-4" />
-            </Link>
+          <Button
+            type="button"
+            size="lg"
+            className="min-w-[200px] rounded-xl shadow-soft gap-2"
+            onClick={() => {
+              setLaunchPreambleComplete();
+              navigate("/app");
+            }}
+          >
+            Ready? Let&apos;s go
+            <ArrowRight className="h-4 w-4" />
           </Button>
         </div>
       </div>

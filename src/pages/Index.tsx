@@ -1,14 +1,26 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Button } from "@/components/ui/button";
+import { Label } from "@/components/ui/label";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { toast } from "sonner";
-import { Plus, RotateCcw, Wand2, Settings2 } from "lucide-react";
+import { Link2, Plus, RotateCcw, Settings2, Wand2 } from "lucide-react";
 import OnboardingWizard from "@/components/aria/OnboardingWizard";
+import FirstLaunchPreamble from "@/components/aria/FirstLaunchPreamble";
 import AriaLogoMark from "@/components/aria/AriaLogoMark";
 import CalendarGrid from "@/components/aria/CalendarGrid";
 import ChatPanel from "@/components/aria/ChatPanel";
 import AddCommitmentModal, { NewCommitment } from "@/components/aria/AddCommitmentModal";
 import ProfileSwitcher from "@/components/aria/ProfileSwitcher";
-import { AriaState, ChatMessage, EMPTY_STATE, ProfilesRootState } from "@/lib/aria-types";
+import EditScheduledEventModal from "@/components/aria/EditScheduledEventModal";
+import {
+  AriaState,
+  CALENDAR_DENSITY_OPTIONS,
+  ChatMessage,
+  EMPTY_STATE,
+  ProfilesRootState,
+  ScheduledEvent,
+  normalizeFlexibleTask,
+} from "@/lib/aria-types";
 import {
   clearState,
   createDefaultProfilesRoot,
@@ -16,9 +28,28 @@ import {
   saveProfilesRoot,
   uid,
 } from "@/lib/aria-storage";
-import { enrichEventsWithTaskEmojis, fixedBlocksToEvents, mergeDayBoundsForCalendar } from "@/lib/schedule-utils";
+import { clearLaunchPreambleFlag, hasCompletedLaunchPreamble, setLaunchPreambleComplete } from "@/lib/launch-preamble";
+import {
+  allFixedEventsForScheduling,
+  enrichEventsWithTaskEmojis,
+  ensureWeeklyFlexibleMinPlacements,
+  fixedBlocksToEvents,
+  fromMin,
+  mealBreaksToEvents,
+  mergePinnedUserFixedFromState,
+  mergeDayBoundsForCalendar,
+  resolveFlexTentativeOverlaps,
+  toMin,
+} from "@/lib/schedule-utils";
 import { callAria } from "@/lib/aria-client";
 import { getDemoState } from "@/lib/demo-data";
+import { consumeShareTokenOnce, decodeShareSnapshot, encodeShareSnapshot } from "@/lib/share-snapshot";
+
+/** Stops React Strict Mode from adding two “demo preset” profiles on one pageload. */
+let urlBootstrapPresetDemoRan = false;
+
+const GENERATE_FULL_WEEK_USER_MESSAGE =
+  "Please generate my full week now. Place all my flexible tasks around the fixed blocks, respecting my preferences and priorities. Return the complete schedule.";
 
 const Index = () => {
   const [profilesRoot, setProfilesRoot] = useState<ProfilesRootState>(createDefaultProfilesRoot());
@@ -30,9 +61,48 @@ const Index = () => {
   const [newUserWizardOpen, setNewUserWizardOpen] = useState(false);
   const [pendingNewUserName, setPendingNewUserName] = useState<string | null>(null);
   const [newUserWizardKey, setNewUserWizardKey] = useState(0);
+  const [calendarEditEvent, setCalendarEditEvent] = useState<ScheduledEvent | null>(null);
+  /** After in-app welcome/intro/step preview, without waiting for another storage read. */
+  const [preambleDismissed, setPreambleDismissed] = useState(false);
 
   useEffect(() => {
-    setProfilesRoot(loadProfilesRoot());
+    let root = loadProfilesRoot();
+    const params = new URLSearchParams(window.location.search);
+    const pathAndHash = `${window.location.pathname}${window.location.hash}`;
+
+    const token = params.get("share");
+    if (token && consumeShareTokenOnce(token)) {
+      const parsed = decodeShareSnapshot(token);
+      if (parsed) {
+        const id = uid();
+        root = {
+          ...root,
+          profiles: [...root.profiles, { id, name: parsed.profileName, aria: parsed.aria }],
+          activeProfileId: id,
+        };
+        window.history.replaceState({}, "", pathAndHash);
+        queueMicrotask(() =>
+          toast.success(`Opened “${parsed.profileName}” — switch profiles in the header anytime.`),
+        );
+      } else {
+        window.history.replaceState({}, "", pathAndHash);
+        queueMicrotask(() => toast.error("That share link is invalid or incomplete."));
+      }
+    } else if (params.get("preset")?.toLowerCase() === "demo" && !urlBootstrapPresetDemoRan) {
+      urlBootstrapPresetDemoRan = true;
+      const id = uid();
+      root = {
+        ...root,
+        profiles: [...root.profiles, { id, name: "Demo calendar", aria: getDemoState() }],
+        activeProfileId: id,
+      };
+      window.history.replaceState({}, "", pathAndHash);
+      queueMicrotask(() =>
+        toast.success("Loaded the built-in demo — try Generate my week, chat, or profiles."),
+      );
+    }
+
+    setProfilesRoot(root);
     setHydrated(true);
   }, []);
 
@@ -61,11 +131,43 @@ const Index = () => {
   }, []);
 
   const allEvents = useMemo(() => {
-    const fixed = fixedBlocksToEvents(state.fixedBlocks);
+    const fixed = allFixedEventsForScheduling({ fixedBlocks: state.fixedBlocks, events: state.events });
+    const flexFromState = state.events.filter((e) => e.kind === "flexible" || e.kind === "tentative");
+    const flexPacked = resolveFlexTentativeOverlaps(
+      flexFromState,
+      fixed,
+      state.mealBreaks ?? [],
+      state.preferences,
+    );
+    /** Meals shift around fixed + flex/tentative within each meal window when possible. */
+    const meals = mealBreaksToEvents(state.mealBreaks ?? [], fixed, flexPacked);
     const fixedIds = new Set(fixed.map((f) => f.id));
-    const others = state.events.filter((e) => e.kind !== "fixed" && !fixedIds.has(e.id));
-    return enrichEventsWithTaskEmojis([...fixed, ...others], state.tasks, state.customTaskCategories);
-  }, [state.fixedBlocks, state.events, state.tasks, state.customTaskCategories]);
+    const mealIds = new Set(meals.map((m) => m.id));
+    /** Meals are always derived from mealBreaks; drop any stale meal rows still stored in events (IDs can drift). */
+    const others = state.events.filter(
+      (e) =>
+        e.kind !== "fixed" &&
+        e.kind !== "meal" &&
+        e.kind !== "flexible" &&
+        e.kind !== "tentative" &&
+        !String(e.id).startsWith("meal-") &&
+        !fixedIds.has(e.id) &&
+        !mealIds.has(e.id),
+    );
+    const merged = [...fixed, ...meals, ...others, ...flexPacked];
+    const seen = new Set<string>();
+    const deduped = merged.filter((e) => {
+      if (seen.has(e.id)) return false;
+      seen.add(e.id);
+      return true;
+    });
+    return enrichEventsWithTaskEmojis(deduped, state.tasks, state.customTaskCategories);
+  }, [state.fixedBlocks, state.mealBreaks, state.events, state.tasks, state.customTaskCategories]);
+
+  const recurringFixedEventIds = useMemo(
+    () => new Set(fixedBlocksToEvents(state.fixedBlocks).map((e) => e.id)),
+    [state.fixedBlocks],
+  );
 
   const calendarBounds = useMemo(
     () => mergeDayBoundsForCalendar(state.preferences.dayStart, state.preferences.dayEnd, allEvents),
@@ -94,7 +196,7 @@ const Index = () => {
       const shouldReplan = next.onboarded && next.tasks.length > 0;
       if (shouldReplan) {
         const regenPrompt =
-          "I just saved updated schedule preferences in my app state (see context JSON: preferences.morningStart, preferredGapBetweenTasksMin, protectEvenings, protectEveningsFrom, freeDays, etc.). Regenerate my FULL week now: keep the same fixed blocks and the same tasks, but replace flexible-task placements so they strictly honor these NEW preferences. Treat preferences.morningStart as the earliest usual start time for flexible tasks; leave at least preferences.preferredGapBetweenTasksMin minutes between adjacent flexible blocks on the same day when it fits around fixed blocks and other rules; do not change fixed blocks. Return the complete updated schedule.";
+          "I just saved updated schedule preferences in my app state (see context JSON: preferences.morningStartWeekday, preferences.morningStartWeekend, preferredGapBetweenTasksMin, protectEvenings, protectEveningsFrom, freeDays, etc.). Regenerate my FULL week now: keep the same fixed blocks and the same tasks, but replace flexible-task placements so they strictly honor these NEW preferences. Use morningStartWeekday for Mon–Fri and morningStartWeekend for Sat–Sun as the earliest usual start for flexible tasks; leave at least preferences.preferredGapBetweenTasksMin minutes between adjacent flexible blocks on the same day when it fits around fixed blocks and other rules; do not change fixed blocks. Return the complete updated schedule.";
         const ok = await sendToAria(regenPrompt, { silent: true, stateOverride: next });
         if (ok) {
           toast.success("Preferences saved — your week was replanned with the new settings.");
@@ -126,7 +228,8 @@ const Index = () => {
     const userMsg: ChatMessage = { role: "user", content: userText, timestamp: Date.now() };
     const newHistory = [...base.chat, userMsg];
     if (!opts?.silent) {
-      setAria((s) => ({ ...s, chat: newHistory }));
+      /** Spread `base` so `stateOverride` (e.g. a pre-added fixed commitment) is not dropped. */
+      setAria({ ...base, chat: newHistory });
     }
     setLoading(true);
     try {
@@ -135,10 +238,33 @@ const Index = () => {
         history: base.chat,
         userMessage: userText,
       });
+      const noMeals = res.events.filter((e) => e.kind !== "meal" && !String(e.id).startsWith("meal-"));
+      const flexBase = noMeals.filter((e) => e.kind === "flexible" || e.kind === "tentative");
+      const blockFixed = fixedBlocksToEvents(base.fixedBlocks);
+      const fixedEv = allFixedEventsForScheduling({ fixedBlocks: base.fixedBlocks, events: base.events });
+      const flexFilled = ensureWeeklyFlexibleMinPlacements(
+        base.tasks,
+        flexBase,
+        fixedEv,
+        base.mealBreaks ?? [],
+        base.preferences,
+      );
+      const flexPacked = resolveFlexTentativeOverlaps(
+        flexFilled,
+        fixedEv,
+        base.mealBreaks ?? [],
+        base.preferences,
+      );
+      const aiFixed = noMeals.filter((e) => e.kind === "fixed");
+      const mergedFixed = mergePinnedUserFixedFromState(base.events, blockFixed, aiFixed);
+      const other = noMeals.filter(
+        (e) => e.kind !== "flexible" && e.kind !== "tentative" && e.kind !== "fixed",
+      );
+      const mergedEvents = [...other, ...mergedFixed, ...flexPacked];
       const aiMsg: ChatMessage = { role: "assistant", content: res.explanation, timestamp: Date.now() };
       setAria((s) => ({
         ...s,
-        events: res.events,
+        events: mergedEvents,
         chat: opts?.silent ? [...s.chat, aiMsg] : [...newHistory, aiMsg],
       }));
       return true;
@@ -149,10 +275,10 @@ const Index = () => {
         content: `Sorry — ${e.message || "I couldn't update the schedule."}`,
         timestamp: Date.now(),
       };
-      setAria((s) => ({
-        ...s,
-        chat: opts?.silent ? [...s.chat, errMsg] : [...newHistory, errMsg],
-      }));
+      setAria({
+        ...base,
+        chat: opts?.silent ? [...base.chat, errMsg] : [...newHistory, errMsg],
+      });
       return false;
     } finally {
       setLoading(false);
@@ -164,7 +290,7 @@ const Index = () => {
       `Add a new commitment: "${c.title}".`,
       `Duration: ${c.durationMin} minutes. Category: ${c.category}. Priority: ${c.priority}.`,
       c.fixedTime && c.fixedDay && c.fixedStart
-        ? `It must be placed at ${c.fixedDay} ${c.fixedStart}.`
+        ? `It must stay at ${c.fixedDay} ${c.fixedStart} (already added as a fixed row in currentEvents with that exact time — keep that row unchanged; only reschedule flexible/tentative tasks around it).`
         : "Find the best slot in the week.",
       c.hasDeadline && c.deadlineDay ? `It must be done by end of ${c.deadlineDay}.` : "",
       c.canDisplace
@@ -174,7 +300,21 @@ const Index = () => {
     ].filter(Boolean).join(" ");
 
     setAddOpen(false);
-    await sendToAria(desc);
+    const clientPinned: ScheduledEvent | null =
+      c.fixedTime && c.fixedDay && c.fixedStart
+        ? {
+            id: uid(),
+            title: c.title.trim(),
+            day: c.fixedDay,
+            start: c.fixedStart,
+            end: fromMin(toMin(c.fixedStart) + c.durationMin),
+            kind: "fixed",
+            category: c.category,
+            priority: c.priority,
+          }
+        : null;
+    const stateOverride = clientPinned ? { ...state, events: [...state.events, clientPinned] } : undefined;
+    await sendToAria(desc, stateOverride ? { stateOverride } : undefined);
   };
 
   const loadDemo = () => {
@@ -185,8 +325,21 @@ const Index = () => {
   const resetAll = () => {
     if (!confirm("Reset all profiles and calendars on this device?")) return;
     clearState();
+    clearLaunchPreambleFlag();
+    setPreambleDismissed(false);
     setProfilesRoot(createDefaultProfilesRoot());
     toast.success("Reset.");
+  };
+
+  const handleCalendarEventClick = (ev: ScheduledEvent) => {
+    if (ev.kind === "flexible" || ev.kind === "tentative") {
+      setCalendarEditEvent(ev);
+      return;
+    }
+    /** Fixed-time commitments live in `events`; onboarding recurring blocks are not editable here. */
+    if (ev.kind === "fixed" && !recurringFixedEventIds.has(ev.id)) {
+      setCalendarEditEvent(ev);
+    }
   };
 
   const handleStartAddUser = (name: string) => {
@@ -201,13 +354,37 @@ const Index = () => {
   const wizardInitial = newUserWizardOpen ? EMPTY_STATE : state;
   const wizardKey = newUserWizardOpen ? `new-user-${newUserWizardKey}` : `main-${wizardMountKey}`;
 
-  if (!hydrated) return null;
+  if (!hydrated) {
+    return (
+      <div className="min-h-screen bg-background flex flex-col items-center justify-center gap-2 text-muted-foreground">
+        <AriaLogoMark size="md" decorative />
+        <p className="text-sm">Loading your planner…</p>
+      </div>
+    );
+  }
+
+  const showLaunchPreamble =
+    !state.onboarded &&
+    !newUserWizardOpen &&
+    !hasCompletedLaunchPreamble() &&
+    !preambleDismissed;
+
+  if (showLaunchPreamble) {
+    return (
+      <FirstLaunchPreamble
+        onComplete={() => {
+          setLaunchPreambleComplete();
+          setPreambleDismissed(true);
+        }}
+      />
+    );
+  }
 
   return (
     <div className="min-h-screen bg-background">
       <header className="border-b bg-card/60 backdrop-blur-sm sticky top-0 z-30">
-        <div className="max-w-[1600px] mx-auto px-6 py-3 flex items-center justify-between">
-          <div className="flex items-center gap-3">
+        <div className="max-w-[1600px] mx-auto px-4 sm:px-6 py-3 flex flex-wrap items-center justify-between gap-x-3 gap-y-2">
+          <div className="flex items-center gap-3 min-w-0 shrink-0">
             <AriaLogoMark size="sm" decorative />
             <div>
               <h1 className="font-display text-2xl leading-none">Aria</h1>
@@ -215,7 +392,7 @@ const Index = () => {
             </div>
           </div>
 
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center justify-end gap-2 min-w-0">
             {state.onboarded && state.tasks.length === 0 && (
               <Button variant="outline" size="sm" onClick={loadDemo} className="gap-1.5">
                 <Wand2 className="h-3.5 w-3.5" /> Load demo data
@@ -223,6 +400,45 @@ const Index = () => {
             )}
             {state.onboarded && (
               <>
+                <Button
+                  size="sm"
+                  className="gap-1.5 shrink-0 text-xs sm:text-sm"
+                  disabled={loading}
+                  onClick={() => void sendToAria(GENERATE_FULL_WEEK_USER_MESSAGE)}
+                >
+                  <Wand2 className="h-3.5 w-3.5 shrink-0" />
+                  Generate my week
+                </Button>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  className="gap-1.5 shrink-0 text-xs sm:text-sm"
+                  title="Copy a link that opens your current calendar as a new profile on someone else’s device"
+                  onClick={() => {
+                    try {
+                      const token = encodeShareSnapshot(activeProfile?.name ?? "Me", state);
+                      const u = new URL(window.location.href);
+                      u.searchParams.set("share", token);
+                      void navigator.clipboard.writeText(u.toString());
+                      if (token.length > 14_000) {
+                        toast.success("Link copied — it is long; use a current browser to open it.", {
+                          duration: 6000,
+                        });
+                      } else {
+                        toast.success(
+                          "Share link copied — opening it adds this calendar as a new profile they can edit.",
+                        );
+                      }
+                    } catch (e: unknown) {
+                      const msg = e instanceof Error ? e.message : "Could not build share link.";
+                      toast.error(msg);
+                    }
+                  }}
+                >
+                  <Link2 className="h-3.5 w-3.5 shrink-0" />
+                  Copy share link
+                </Button>
                 <Button variant="ghost" size="sm" onClick={resetAll} className="gap-1.5 text-muted-foreground">
                   <RotateCcw className="h-3.5 w-3.5" /> Reset
                 </Button>
@@ -250,9 +466,8 @@ const Index = () => {
         </div>
       </header>
 
-      {state.onboarded && (
-        <main className="max-w-[1600px] mx-auto px-6 py-5 grid grid-cols-1 lg:grid-cols-[1fr_360px] gap-5">
-          <div className="space-y-3">
+      <main className="max-w-[1600px] mx-auto px-4 sm:px-6 py-5 flex flex-col-reverse gap-5 lg:grid lg:grid-cols-[1fr_360px]">
+          <div className="space-y-3 min-w-0">
             {state.tasks.length === 0 && (
               <div className="rounded-xl border border-dashed bg-card/50 px-5 py-6 text-center">
                 <div className="text-sm font-medium mb-1">Your week is empty</div>
@@ -265,18 +480,53 @@ const Index = () => {
                 </Button>
               </div>
             )}
+            <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-2">
+              <span className="text-xs font-medium text-muted-foreground">Week view</span>
+              <div className="flex items-center gap-2">
+                <Label htmlFor="cal-hour-height" className="text-xs text-muted-foreground whitespace-nowrap shrink-0">
+                  Density
+                </Label>
+                <Select
+                  value={String(state.preferences.calendarHourHeightPx)}
+                  onValueChange={(v) =>
+                    setAria((s) => ({
+                      ...s,
+                      preferences: { ...s.preferences, calendarHourHeightPx: Number(v) },
+                    }))
+                  }
+                >
+                  <SelectTrigger id="cal-hour-height" className="h-8 min-w-[220px] max-w-[min(100%,280px)] text-xs">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent position="popper" className="min-w-[var(--radix-select-trigger-width)]">
+                    {CALENDAR_DENSITY_OPTIONS.map((o) => (
+                      <SelectItem key={o.value} value={String(o.value)}>
+                        {o.label}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+            </div>
             <CalendarGrid
               events={allEvents}
               dayStart={calendarBounds.dayStart}
               dayEnd={calendarBounds.dayEnd}
+              recurringFixedEventIds={recurringFixedEventIds}
+              hourHeightPx={state.preferences.calendarHourHeightPx}
+              onEventClick={handleCalendarEventClick}
             />
             <Legend />
           </div>
-          <div className="lg:h-[calc(100vh-100px)] lg:sticky lg:top-[76px]">
-            <ChatPanel messages={state.chat} onSend={(t) => sendToAria(t)} loading={loading} />
+          <div className="h-[min(420px,52vh)] lg:h-[calc(100vh-100px)] lg:sticky lg:top-[76px]">
+            <ChatPanel
+              messages={state.chat}
+              onSend={(t) => sendToAria(t)}
+              loading={loading}
+              generateWeekMessage={GENERATE_FULL_WEEK_USER_MESSAGE}
+            />
           </div>
-        </main>
-      )}
+      </main>
 
       <OnboardingWizard
         key={wizardKey}
@@ -295,29 +545,64 @@ const Index = () => {
       />
 
       <AddCommitmentModal open={addOpen} onOpenChange={setAddOpen} onSubmit={addCommitment} loading={loading} />
+
+      {calendarEditEvent ? (
+        <EditScheduledEventModal
+          key={calendarEditEvent.id}
+          event={calendarEditEvent}
+          tasks={state.tasks}
+          onClose={() => setCalendarEditEvent(null)}
+          onSave={(updated, taskSync) => {
+            setAria((s) => ({
+              ...s,
+              events: s.events.map((e) => (e.id === updated.id ? updated : e)),
+              tasks: taskSync
+                ? s.tasks.map((t) =>
+                    t.id === taskSync.taskId ? normalizeFlexibleTask({ ...t, ...taskSync.patch }) : t,
+                  )
+                : s.tasks,
+            }));
+            setCalendarEditEvent(null);
+            toast.success("Event updated.");
+          }}
+        />
+      ) : null}
     </div>
   );
 };
 
 function Legend() {
   const items: { label: string; cls: string }[] = [
-    { label: "Fixed (work/class)", cls: "bg-neutral-200 dark:bg-neutral-700" },
-    { label: "Home", cls: "bg-cat-home" },
-    { label: "Health", cls: "bg-cat-health" },
-    { label: "Personal", cls: "bg-cat-personal" },
-    { label: "Social", cls: "bg-cat-social" },
-    { label: "Admin", cls: "bg-cat-admin" },
+    {
+      label: "Recurring weekly blocks (onboarding)",
+      cls: "border border-neutral-300/95 border-l-[3px] border-l-neutral-500 bg-neutral-300/90 dark:bg-neutral-600/85",
+    },
+    {
+      label: "Meals",
+      cls: "border border-zinc-200/85 border-l-[3px] border-l-zinc-400/55 bg-white/95 dark:border-zinc-600/70 dark:border-l-zinc-400/50 dark:bg-zinc-900/40",
+    },
+    { label: "Work", cls: "bg-cat-work-soft border border-cat-work" },
+    { label: "Home", cls: "bg-cat-home-soft border border-cat-home" },
+    { label: "Health", cls: "bg-cat-health-soft border border-cat-health" },
+    { label: "Personal", cls: "bg-cat-personal-soft border border-cat-personal" },
+    { label: "Social", cls: "bg-cat-social-soft border border-cat-social" },
+    { label: "Admin", cls: "bg-cat-admin-soft border border-cat-admin" },
+    { label: "Other", cls: "bg-cat-other-soft border border-cat-other" },
   ];
   return (
     <div className="flex flex-wrap items-center gap-x-4 gap-y-1.5 px-1 text-[11px] text-muted-foreground">
+      <span className="basis-full text-[10px] text-muted-foreground/90">
+        Category colors: flexible tasks and fixed-time commitments — not onboarding recurring blocks.
+      </span>
       {items.map((i) => (
         <div key={i.label} className="flex items-center gap-1.5">
-          <span className={`h-2.5 w-2.5 rounded-sm ${i.cls}`} />
+          <span className={`h-2.5 w-2.5 shrink-0 rounded-sm ${i.cls}`} />
           {i.label}
         </div>
       ))}
       <div className="flex items-center gap-1.5">
-        <span className="h-2.5 w-2.5 rounded-sm hatched border border-border" /> Tentative
+        <span className="h-2.5 w-2.5 shrink-0 rounded-sm hatched border border-border" />
+        Tentative
       </div>
     </div>
   );

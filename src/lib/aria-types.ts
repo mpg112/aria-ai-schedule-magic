@@ -47,6 +47,107 @@ export interface FixedBlock {
   category: Category;
 }
 
+export type MealKind = "breakfast" | "lunch" | "dinner";
+
+export const MEAL_KIND_LABEL: Record<MealKind, string> = {
+  breakfast: "Breakfast",
+  lunch: "Lunch",
+  dinner: "Dinner",
+};
+
+/** Recurring meal / buffer: shown softly on the calendar; Aria avoids flexible tasks during these times. */
+export interface MealBreak {
+  id: string;
+  kind: MealKind;
+  enabled: boolean;
+  days: DayKey[];
+  /** Meal must fit entirely inside this window (24h HH:MM). */
+  windowStart: string;
+  windowEnd: string;
+  durationMin: number;
+}
+
+function mealToMin(t: string): number {
+  const [h, m] = t.split(":").map(Number);
+  if (!Number.isFinite(h)) return 7 * 60;
+  return h * 60 + (Number.isFinite(m) ? m : 0);
+}
+
+function mealFromMin(min: number): string {
+  const h = Math.floor(min / 60);
+  const mm = Math.min(59, Math.max(0, min % 60));
+  return `${String(h).padStart(2, "0")}:${String(mm).padStart(2, "0")}`;
+}
+
+function newMealBreakId(): string {
+  return `m${Math.random().toString(36).slice(2, 9)}${Date.now().toString(36).slice(-4)}`;
+}
+
+/** Clamp meal window and duration; drop invalid days. (Legacy `placedStart` in JSON is ignored.) */
+export function normalizeMealBreak(raw: Partial<MealBreak> & { id?: string; placedStart?: string }): MealBreak {
+  const id = typeof raw.id === "string" && raw.id.trim() ? raw.id.trim() : newMealBreakId();
+  const kind: MealKind =
+    raw.kind === "lunch" || raw.kind === "dinner" || raw.kind === "breakfast" ? raw.kind : "breakfast";
+  let durationMin = typeof raw.durationMin === "number" ? Math.round(raw.durationMin) : 30;
+  durationMin = Math.min(180, Math.max(15, Math.round(durationMin / 5) * 5));
+  const daySet = new Set(DAYS);
+  const rawDayList = raw.days === undefined || raw.days === null ? [...DAYS] : [...raw.days];
+  const days = rawDayList.filter((d): d is DayKey => daySet.has(d as DayKey));
+
+  let ws = mealToMin(typeof raw.windowStart === "string" ? raw.windowStart : "07:00");
+  let we = mealToMin(typeof raw.windowEnd === "string" ? raw.windowEnd : "09:00");
+  if (!Number.isFinite(ws)) ws = 7 * 60;
+  if (!Number.isFinite(we)) we = 9 * 60;
+  if (we <= ws) we = ws + durationMin;
+  let latestStart = we - durationMin;
+  if (latestStart < ws) {
+    we = ws + durationMin;
+  }
+
+  return {
+    id,
+    kind,
+    enabled: typeof raw.enabled === "boolean" ? raw.enabled : true,
+    days,
+    windowStart: mealFromMin(ws),
+    windowEnd: mealFromMin(we),
+    durationMin,
+  };
+}
+
+/** Stable ids so preset breakfast / lunch / dinner rows stay identifiable in the UI. */
+export function createDefaultMealBreaks(): MealBreak[] {
+  return [
+    normalizeMealBreak({
+      id: "meal-default-breakfast",
+      kind: "breakfast",
+      enabled: true,
+      days: [...DAYS],
+      windowStart: "06:30",
+      windowEnd: "10:00",
+      durationMin: 30,
+    }),
+    normalizeMealBreak({
+      id: "meal-default-lunch",
+      kind: "lunch",
+      enabled: true,
+      days: [...DAYS],
+      windowStart: "11:30",
+      windowEnd: "14:00",
+      durationMin: 45,
+    }),
+    normalizeMealBreak({
+      id: "meal-default-dinner",
+      kind: "dinner",
+      enabled: true,
+      days: [...DAYS],
+      windowStart: "17:30",
+      windowEnd: "21:00",
+      durationMin: 60,
+    }),
+  ];
+}
+
 /** User-defined bucket for grouping tasks in onboarding (calendar uses paletteCategory). */
 export interface CustomTaskCategory {
   id: string;
@@ -140,10 +241,9 @@ export function normalizeFlexibleTask(raw: FlexibleTask): FlexibleTask {
       : timesPerWeekMin;
   timesPerWeekMin = Math.min(7, Math.max(1, timesPerWeekMin));
   timesPerWeekMax = Math.min(7, Math.max(1, timesPerWeekMax));
+  /** If max was below min, raise max—do not lower min (swap would drop the user’s minimum, e.g. 3×/wk). */
   if (timesPerWeekMin > timesPerWeekMax) {
-    const swap = timesPerWeekMin;
-    timesPerWeekMin = timesPerWeekMax;
-    timesPerWeekMax = swap;
+    timesPerWeekMax = timesPerWeekMin;
   }
 
   let preferredTimeWindows = [...(raw.preferredTimeWindows ?? [])];
@@ -176,8 +276,10 @@ export function normalizeFlexibleTask(raw: FlexibleTask): FlexibleTask {
 }
 
 export interface Preferences {
-  /** Earliest usual time for Aria to *schedule* flexible tasks (scheduling — not grid display). */
-  morningStart: string; // "07:00"
+  /** Earliest usual time Mon–Fri for Aria to *schedule* flexible tasks (not calendar grid display). */
+  morningStartWeekday: string; // "07:00"
+  /** Earliest usual time Sat–Sun (often later than weekdays). */
+  morningStartWeekend: string; // "09:00"
   /** Preferred minimum gap (minutes) between flexible-task blocks on the same day when possible; soft constraint. */
   preferredGapBetweenTasksMin: number;
   protectEvenings: boolean;
@@ -188,7 +290,35 @@ export interface Preferences {
   dayStart: string;
   /** Week grid visible range only — cosmetic; does not define when tasks may run. */
   dayEnd: string;
+  /** Pixels per hour on the week calendar (display only). Must be one of `CALENDAR_DENSITY_HEIGHT_PX`. */
+  calendarHourHeightPx: number;
 }
+
+/** Week calendar row heights (px per hour); labels in the UI are qualitative, not raw pixels. */
+export const CALENDAR_DENSITY_HEIGHT_PX = [32, 52, 72, 96] as const;
+
+export type CalendarDensityHeightPx = (typeof CALENDAR_DENSITY_HEIGHT_PX)[number];
+
+export function snapCalendarDensityPx(px: number): CalendarDensityHeightPx {
+  const allowed = [...CALENDAR_DENSITY_HEIGHT_PX];
+  let best = allowed[0]!;
+  let bestDist = Infinity;
+  for (const p of allowed) {
+    const d = Math.abs(px - p);
+    if (d < bestDist) {
+      bestDist = d;
+      best = p;
+    }
+  }
+  return best;
+}
+
+export const CALENDAR_DENSITY_OPTIONS: { value: CalendarDensityHeightPx; label: string }[] = [
+  { value: 32, label: "Compact — fit more on screen" },
+  { value: 52, label: "Balanced" },
+  { value: 72, label: "Comfortable" },
+  { value: 96, label: "Spacious — easiest to read" },
+];
 
 export interface ScheduledEvent {
   id: string;
@@ -196,11 +326,54 @@ export interface ScheduledEvent {
   day: DayKey;
   start: string; // HH:MM
   end: string;
-  kind: "fixed" | "flexible" | "tentative";
+  kind: "fixed" | "flexible" | "tentative" | "meal";
   category: Category;
   priority?: Priority;
   /** UI: when set (e.g. from task / custom category), calendar shows this instead of category default. */
   emoji?: string;
+}
+
+/** AI may reuse the same id for multiple flex rows; the calendar dedupes by id so only one block shows. */
+export function dedupeRepairFlexibleEventIds(events: ScheduledEvent[]): ScheduledEvent[] {
+  const seen = new Set<string>();
+  return events.map((e, idx) => {
+    if (e.kind !== "flexible" && e.kind !== "tentative") return e;
+    let id = String(e.id ?? "").trim();
+    if (!id) id = `flex-${idx}`;
+    if (!seen.has(id)) {
+      seen.add(id);
+      return { ...e, id };
+    }
+    let n = 2;
+    let next = `${id}-dup${n}`;
+    while (seen.has(next)) {
+      n++;
+      next = `${id}-dup${n}`;
+    }
+    seen.add(next);
+    return { ...e, id: next };
+  });
+}
+
+function normTitleWords(s: string): string {
+  return s.trim().toLowerCase().replace(/\s+/g, " ");
+}
+
+function firstWordTitle(s: string): string {
+  const t = normTitleWords(s);
+  return t.split(" ")[0] ?? "";
+}
+
+/** Count / match flex rows to a weekly task: id link, exact title, or same first word (e.g. Gym vs Gym session). */
+export function flexEventLikelyForWeeklyTask(task: FlexibleTask, e: ScheduledEvent): boolean {
+  if (e.kind !== "flexible" && e.kind !== "tentative") return false;
+  if (e.id === task.id || e.id.startsWith(`${task.id}-`)) return true;
+  const a = normTitleWords(task.title);
+  const b = normTitleWords(e.title);
+  if (a === b) return true;
+  const fw = firstWordTitle(task.title);
+  const ew = firstWordTitle(e.title);
+  return fw.length >= 3 && ew.length >= 3 && fw === ew;
 }
 
 export interface ChatMessage {
@@ -212,6 +385,8 @@ export interface ChatMessage {
 export interface AriaState {
   onboarded: boolean;
   fixedBlocks: FixedBlock[];
+  /** Optional meal buffers — soft on the calendar; block flexible scheduling like fixed times. */
+  mealBreaks: MealBreak[];
   tasks: FlexibleTask[];
   customTaskCategories: CustomTaskCategory[];
   preferences: Preferences;
@@ -220,35 +395,57 @@ export interface AriaState {
 }
 
 export const DEFAULT_PREFERENCES: Preferences = {
-  morningStart: "07:00",
+  morningStartWeekday: "07:00",
+  morningStartWeekend: "07:00",
   preferredGapBetweenTasksMin: 15,
   protectEvenings: true,
   protectEveningsFrom: "19:00",
   freeDays: [],
   dayStart: "07:00",
   dayEnd: "24:00",
+  calendarHourHeightPx: 52,
 };
 
-/** Merge persisted prefs with defaults; clamp gap to a sane slider step (migration from legacy clusterErrands). */
+/** Merge persisted prefs with defaults; migrate legacy `morningStart` → weekday/weekend. */
 export function normalizePreferences(raw: Partial<Preferences> | undefined): Preferences {
+  const legacy = raw as (Partial<Preferences> & { morningStart?: string }) | undefined;
+  const legacyMorning =
+    typeof legacy?.morningStart === "string" && legacy.morningStart.trim() ? legacy.morningStart.trim() : undefined;
   const m = { ...DEFAULT_PREFERENCES, ...(raw ?? {}) };
   let gap = Number(m.preferredGapBetweenTasksMin);
   if (!Number.isFinite(gap)) gap = DEFAULT_PREFERENCES.preferredGapBetweenTasksMin;
   gap = Math.min(120, Math.max(0, Math.round(gap / 5) * 5));
+
+  const morningStartWeekday =
+    (m.morningStartWeekday && m.morningStartWeekday.trim()) ||
+    legacyMorning ||
+    DEFAULT_PREFERENCES.morningStartWeekday;
+  const morningStartWeekendRaw =
+    (m.morningStartWeekend && m.morningStartWeekend.trim()) || legacyMorning || morningStartWeekday;
+
+  let calendarHourHeightPx = Number((m as { calendarHourHeightPx?: unknown }).calendarHourHeightPx);
+  if (!Number.isFinite(calendarHourHeightPx)) calendarHourHeightPx = DEFAULT_PREFERENCES.calendarHourHeightPx;
+  calendarHourHeightPx = snapCalendarDensityPx(Math.round(calendarHourHeightPx / 4) * 4);
+
+  const freeDays = Array.isArray(m.freeDays) ? [...m.freeDays] : [...DEFAULT_PREFERENCES.freeDays];
+
   return {
-    morningStart: m.morningStart,
+    morningStartWeekday,
+    morningStartWeekend: morningStartWeekendRaw,
     preferredGapBetweenTasksMin: gap,
-    protectEvenings: m.protectEvenings,
-    protectEveningsFrom: m.protectEveningsFrom,
-    freeDays: [...m.freeDays],
-    dayStart: m.dayStart,
-    dayEnd: m.dayEnd,
+    protectEvenings: Boolean(m.protectEvenings),
+    protectEveningsFrom: m.protectEveningsFrom ?? DEFAULT_PREFERENCES.protectEveningsFrom,
+    freeDays,
+    dayStart: (m.dayStart && String(m.dayStart).trim()) || DEFAULT_PREFERENCES.dayStart,
+    dayEnd: (m.dayEnd && String(m.dayEnd).trim()) || DEFAULT_PREFERENCES.dayEnd,
+    calendarHourHeightPx,
   };
 }
 
 export const EMPTY_STATE: AriaState = {
   onboarded: false,
   fixedBlocks: [],
+  mealBreaks: [],
   tasks: [],
   customTaskCategories: [],
   preferences: DEFAULT_PREFERENCES,

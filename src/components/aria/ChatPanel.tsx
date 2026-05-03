@@ -9,6 +9,8 @@ interface Props {
   messages: ChatMessage[];
   onSend: (text: string) => Promise<void>;
   loading: boolean;
+  /** When set, empty state shows a primary “Generate my week” button that sends this text. */
+  generateWeekMessage?: string;
 }
 
 const QUICK = [
@@ -18,7 +20,7 @@ const QUICK = [
   "Pack tomorrow lighter",
 ];
 
-export default function ChatPanel({ messages, onSend, loading }: Props) {
+export default function ChatPanel({ messages, onSend, loading, generateWeekMessage }: Props) {
   const [input, setInput] = useState("");
   const scrollRef = useRef<HTMLDivElement>(null);
 
@@ -34,7 +36,7 @@ export default function ChatPanel({ messages, onSend, loading }: Props) {
   };
 
   return (
-    <div className="flex flex-col h-full bg-card border rounded-xl shadow-soft overflow-hidden">
+    <div className="flex flex-col h-full min-h-0 bg-card border rounded-xl shadow-soft overflow-hidden">
       <div className="px-4 py-3 border-b flex items-center gap-2 bg-muted/30">
         <div className="h-7 w-7 rounded-full bg-primary/10 grid place-items-center text-primary">
           <Sparkles className="h-3.5 w-3.5" />
@@ -49,8 +51,20 @@ export default function ChatPanel({ messages, onSend, loading }: Props) {
         {messages.length === 0 && !loading && (
           <div className="space-y-3">
             <p className="text-sm text-muted-foreground leading-relaxed">
-              Hi — I'm Aria. Tap <span className="font-semibold text-foreground">Generate my week</span> to fill your calendar, or just tell me what you need.
+              Hi — I'm Aria. Use{" "}
+              <span className="font-semibold text-foreground">Generate my week</span> to fill your calendar from your
+              tasks and fixed blocks, or type a request below.
             </p>
+            {generateWeekMessage ? (
+              <Button
+                className="w-full gap-2"
+                disabled={loading}
+                onClick={() => void onSend(generateWeekMessage)}
+              >
+                <Sparkles className="h-4 w-4" />
+                Generate my week
+              </Button>
+            ) : null}
             <div className="space-y-1.5">
               {QUICK.map((q) => (
                 <button

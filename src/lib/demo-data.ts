@@ -1,4 +1,4 @@
-import { AriaState, FlexibleTask, normalizeFlexibleTask } from "./aria-types";
+import { AriaState, FlexibleTask, createDefaultMealBreaks, normalizeFlexibleTask } from "./aria-types";
 import { uid } from "./aria-storage";
 
 export function getDemoState(): AriaState {
@@ -22,6 +22,7 @@ export function getDemoState(): AriaState {
         category: "work",
       },
     ],
+    mealBreaks: createDefaultMealBreaks(),
     customTaskCategories: [],
     tasks: [
       {
@@ -47,7 +48,8 @@ export function getDemoState(): AriaState {
       { id: uid(), title: "Pay bills & inbox", category: "admin", durationMin: 45, frequency: "weekly", preferredTimeOfDay: "afternoon", preferredDay: "any", priority: "low" },
     ].map((t) => normalizeFlexibleTask(t as FlexibleTask)),
     preferences: {
-      morningStart: "07:00",
+      morningStartWeekday: "07:00",
+      morningStartWeekend: "09:00",
       preferredGapBetweenTasksMin: 15,
       protectEvenings: false,
       protectEveningsFrom: "19:00",

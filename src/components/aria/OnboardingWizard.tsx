@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Button } from "@/components/ui/button";
@@ -8,9 +8,24 @@ import { Label } from "@/components/ui/label";
 import { Slider } from "@/components/ui/slider";
 import { Switch } from "@/components/ui/switch";
 import { TimeSelect5 } from "@/components/ui/quantized-selects";
-import { Calendar, CalendarDays, ListChecks, Settings2, Plus, Trash2 } from "lucide-react";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Calendar, CalendarDays, Coffee, ListChecks, Settings2, Plus, Trash2 } from "lucide-react";
 import { TasksStep } from "@/components/aria/tasks-step";
-import { AriaState, CATEGORY_META, Category, DAYS, DayKey, FixedBlock, ScheduledEvent } from "@/lib/aria-types";
+import { MealsStep } from "@/components/aria/meals-step";
+import {
+  AriaState,
+  CALENDAR_DENSITY_OPTIONS,
+  CATEGORY_META,
+  Category,
+  DAYS,
+  DayKey,
+  DEFAULT_PREFERENCES,
+  FixedBlock,
+  MealBreak,
+  ScheduledEvent,
+  createDefaultMealBreaks,
+  normalizeMealBreak,
+} from "@/lib/aria-types";
 import { uid } from "@/lib/aria-storage";
 import { cn } from "@/lib/utils";
 
@@ -26,8 +41,14 @@ interface Props {
 
 const STEPS = [
   { id: 1, title: "Your fixed schedule", icon: Calendar, desc: "Tell Aria when you're locked in for work or class." },
-  { id: 2, title: "Your tasks", icon: ListChecks, desc: "Pick what you'd like to fit into the rest of your week." },
-  { id: 3, title: "Your preferences", icon: Settings2, desc: "A few small details that shape how Aria plans." },
+  {
+    id: 2,
+    title: "Meals (optional)",
+    icon: Coffee,
+    desc: "Breakfast, lunch, and dinner are set up for you—adjust days and windows, add extras, or skip.",
+  },
+  { id: 3, title: "Your tasks", icon: ListChecks, desc: "Pick what you'd like to fit into the rest of your week." },
+  { id: 4, title: "Your preferences", icon: Settings2, desc: "A few small details that shape how Aria plans." },
 ];
 
 export default function OnboardingWizard({
@@ -40,24 +61,36 @@ export default function OnboardingWizard({
   const isSettings = variant === "settings";
   const isNewUser = variant === "newUser";
   const [step, setStep] = useState(1);
-  const [settingsTab, setSettingsTab] = useState<"fixed" | "tasks" | "preferences">("preferences");
+
+  useEffect(() => {
+    setStep((s) => {
+      const v = Math.min(STEPS.length, Math.max(1, s));
+      return v === s ? s : v;
+    });
+  }, [step]);
+  const [settingsTab, setSettingsTab] = useState<"fixed" | "meals" | "tasks" | "preferences">("preferences");
   const [fixedBlocks, setFixedBlocks] = useState<FixedBlock[]>(
-    initial.fixedBlocks.length
+    initial.fixedBlocks?.length
       ? initial.fixedBlocks
       : [{ id: uid(), title: "Work", days: ["Mon","Tue","Wed","Thu","Fri"], start: "09:00", end: "18:00", category: "work" }]
   );
-  const [tasks, setTasks] = useState(initial.tasks);
+  const [mealBreaks, setMealBreaks] = useState<MealBreak[]>(() =>
+    (initial.mealBreaks?.length ?? 0) > 0 ? (initial.mealBreaks ?? []).map((x) => normalizeMealBreak(x)) : createDefaultMealBreaks(),
+  );
+  const [tasks, setTasks] = useState(() => initial.tasks ?? []);
   const [customTaskCategories, setCustomTaskCategories] = useState(initial.customTaskCategories ?? []);
   const [prefs, setPrefs] = useState(initial.preferences);
 
-  const progress = (step / STEPS.length) * 100;
-  const current = STEPS[step - 1];
+  const safeStep = Math.min(STEPS.length, Math.max(1, step));
+  const progress = (safeStep / STEPS.length) * 100;
+  const current = STEPS[safeStep - 1]!;
 
   const finish = () => {
     void onComplete({
       ...initial,
       onboarded: true,
       fixedBlocks,
+      mealBreaks: mealBreaks.map((x) => normalizeMealBreak(x)),
       tasks,
       customTaskCategories,
       preferences: prefs,
@@ -78,6 +111,7 @@ export default function OnboardingWizard({
       }}
     >
       <DialogContent
+        overlayClassName={locked ? "bg-black/40 backdrop-blur-[1px]" : undefined}
         className={cn(
           "flex max-h-[90vh] max-w-2xl flex-col gap-0 overflow-hidden p-0",
           locked && "[&>button]:hidden",
@@ -88,7 +122,7 @@ export default function OnboardingWizard({
         {isSettings ? (
           <Tabs
             value={settingsTab}
-            onValueChange={(v) => setSettingsTab(v as "fixed" | "tasks" | "preferences")}
+            onValueChange={(v) => setSettingsTab(v as "fixed" | "meals" | "tasks" | "preferences")}
             className="flex min-h-0 flex-1 flex-col"
           >
             <div className="shrink-0 border-b bg-muted/20 px-7 pb-4 pt-7">
@@ -98,9 +132,12 @@ export default function OnboardingWizard({
                   Jump to any section. Save when you&apos;re done—Aria will replan if you have tasks.
                 </DialogDescription>
               </DialogHeader>
-              <TabsList className="mt-5 grid h-auto w-full grid-cols-3 gap-1.5 rounded-lg bg-muted p-1.5">
+              <TabsList className="mt-5 grid h-auto w-full grid-cols-2 sm:grid-cols-4 gap-1.5 rounded-lg bg-muted p-1.5">
                 <TabsTrigger value="fixed" className="text-xs sm:text-sm">
                   Fixed
+                </TabsTrigger>
+                <TabsTrigger value="meals" className="text-xs sm:text-sm">
+                  Meals
                 </TabsTrigger>
                 <TabsTrigger value="tasks" className="text-xs sm:text-sm">
                   Tasks
@@ -114,6 +151,9 @@ export default function OnboardingWizard({
             <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-7 py-5">
               <TabsContent value="fixed" className="m-0 mt-0 outline-none focus-visible:ring-0 focus-visible:ring-offset-0">
                 <FixedStep blocks={fixedBlocks} setBlocks={setFixedBlocks} />
+              </TabsContent>
+              <TabsContent value="meals" className="m-0 mt-0 outline-none focus-visible:ring-0 focus-visible:ring-offset-0">
+                <MealsStep mealBreaks={mealBreaks} setMealBreaks={setMealBreaks} />
               </TabsContent>
               <TabsContent value="tasks" className="m-0 mt-0 outline-none focus-visible:ring-0 focus-visible:ring-offset-0">
                 <TasksStep
@@ -145,7 +185,7 @@ export default function OnboardingWizard({
                   <current.icon className="h-5 w-5" />
                 </div>
                 <div className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
-                  Step {step} of {STEPS.length}
+                  Step {safeStep} of {STEPS.length}
                 </div>
               </div>
               <DialogHeader className="space-y-1.5 text-left">
@@ -158,8 +198,9 @@ export default function OnboardingWizard({
             </div>
 
             <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-7 py-5">
-              {step === 1 && <FixedStep blocks={fixedBlocks} setBlocks={setFixedBlocks} />}
-              {step === 2 && (
+              {safeStep === 1 && <FixedStep blocks={fixedBlocks} setBlocks={setFixedBlocks} />}
+              {safeStep === 2 && <MealsStep mealBreaks={mealBreaks} setMealBreaks={setMealBreaks} />}
+              {safeStep === 3 && (
                 <TasksStep
                   tasks={tasks}
                   setTasks={setTasks}
@@ -167,15 +208,35 @@ export default function OnboardingWizard({
                   setCustomTaskCategories={setCustomTaskCategories}
                 />
               )}
-              {step === 3 && <PrefsStep prefs={prefs} setPrefs={setPrefs} prefsVariant="onboarding" />}
+              {safeStep === 4 && <PrefsStep prefs={prefs} setPrefs={setPrefs} prefsVariant="onboarding" />}
             </div>
 
-            <div className="flex shrink-0 items-center justify-between border-t bg-muted/30 px-7 py-4">
-              <Button variant="ghost" disabled={step === 1} onClick={() => setStep((s) => Math.max(1, s - 1))}>
-                Back
-              </Button>
-              {step < STEPS.length ? (
-                <Button onClick={() => setStep((s) => s + 1)}>Continue</Button>
+            <div className="flex shrink-0 items-center justify-between gap-3 border-t bg-muted/30 px-7 py-4">
+              <div className="flex flex-wrap items-center gap-1">
+                {locked ? (
+                  <Button type="button" variant="link" className="h-auto px-2 text-muted-foreground" onClick={() => finish()}>
+                    Skip setup — show calendar
+                  </Button>
+                ) : null}
+                <Button variant="ghost" disabled={safeStep === 1} onClick={() => setStep((s) => Math.max(1, s - 1))}>
+                  Back
+                </Button>
+                {safeStep === 2 ? (
+                  <Button
+                    type="button"
+                    variant="link"
+                    className="h-auto px-2 text-muted-foreground"
+                    onClick={() => {
+                      setMealBreaks([]);
+                      setStep(3);
+                    }}
+                  >
+                    Skip meals
+                  </Button>
+                ) : null}
+              </div>
+              {safeStep < STEPS.length ? (
+                <Button onClick={() => setStep((s) => Math.min(STEPS.length, s + 1))}>Continue</Button>
               ) : (
                 <Button onClick={finish} className="gap-2">
                   <CalendarDays className="h-4 w-4" /> Open Aria
@@ -283,16 +344,28 @@ function PrefsStep({
         <div className="space-y-1">
           <Label className="text-sm font-medium">When flexible tasks can start</Label>
           <p className="text-xs text-muted-foreground leading-snug">
-            Earliest time Aria should usually begin scheduling flexible tasks. Fixed blocks, evening protection, and per-task times still apply.
+            Earliest time Aria should usually place flexible tasks—separately for weekdays vs weekends if you like (e.g. sleep in Saturday). Fixed blocks, evening protection, and per-task times still apply.
             {showCalendarDisplayOnly ? <> Not when your calendar grid begins.</> : null}
           </p>
         </div>
-        <TimeSelect5
-          value={prefs.morningStart}
-          onChange={(v) => setPrefs({ ...prefs, morningStart: v })}
-          className="max-w-[260px]"
-          triggerClassName="h-10 w-full"
-        />
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 max-w-xl">
+          <div className="space-y-2">
+            <Label className="text-xs font-medium text-muted-foreground">Monday – Friday</Label>
+            <TimeSelect5
+              value={prefs.morningStartWeekday}
+              onChange={(v) => setPrefs({ ...prefs, morningStartWeekday: v })}
+              triggerClassName="h-10 w-full"
+            />
+          </div>
+          <div className="space-y-2">
+            <Label className="text-xs font-medium text-muted-foreground">Saturday – Sunday</Label>
+            <TimeSelect5
+              value={prefs.morningStartWeekend}
+              onChange={(v) => setPrefs({ ...prefs, morningStartWeekend: v })}
+              triggerClassName="h-10 w-full"
+            />
+          </div>
+        </div>
       </div>
 
       <div className="rounded-xl border bg-card p-4 space-y-4">
@@ -405,6 +478,27 @@ function PrefsStep({
                 allowMidnightEnd
               />
             </div>
+          </div>
+          <div className="rounded-lg border bg-background p-3 space-y-2">
+            <Label className="text-xs font-medium text-muted-foreground">Week calendar density</Label>
+            <p className="text-[11px] text-muted-foreground leading-snug">
+              How tall each hour looks on the week view — pick what fits your screen and reading comfort.
+            </p>
+            <Select
+              value={String(prefs.calendarHourHeightPx ?? DEFAULT_PREFERENCES.calendarHourHeightPx)}
+              onValueChange={(v) => setPrefs({ ...prefs, calendarHourHeightPx: Number(v) })}
+            >
+              <SelectTrigger className="h-10 w-full">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent position="popper" className="min-w-[var(--radix-select-trigger-width)]">
+                {CALENDAR_DENSITY_OPTIONS.map((o) => (
+                  <SelectItem key={o.value} value={String(o.value)}>
+                    {o.label}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
           </div>
         </div>
       ) : null}
