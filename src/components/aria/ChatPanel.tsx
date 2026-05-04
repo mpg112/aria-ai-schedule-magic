@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect } from "react";
-import { Send, Sparkles, Loader2 } from "lucide-react";
+import { Copy, Loader2, Send, Sparkles } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { ChatMessage } from "@/lib/aria-types";
@@ -11,6 +11,13 @@ interface Props {
   loading: boolean;
   /** When set, empty state shows a primary “Generate my week” button that sends this text. */
   generateWeekMessage?: string;
+  usageSummary?: {
+    requests: number;
+    promptTokens: number;
+    completionTokens: number;
+    totalTokens: number;
+  };
+  onCopyUsage?: () => void;
 }
 
 const QUICK = [
@@ -20,7 +27,14 @@ const QUICK = [
   "Pack tomorrow lighter",
 ];
 
-export default function ChatPanel({ messages, onSend, loading, generateWeekMessage }: Props) {
+export default function ChatPanel({
+  messages,
+  onSend,
+  loading,
+  generateWeekMessage,
+  usageSummary,
+  onCopyUsage,
+}: Props) {
   const [input, setInput] = useState("");
   const scrollRef = useRef<HTMLDivElement>(null);
 
@@ -45,6 +59,26 @@ export default function ChatPanel({ messages, onSend, loading, generateWeekMessa
           <div className="text-sm font-semibold leading-tight">Aria</div>
           <div className="text-[11px] text-muted-foreground">Your scheduling assistant</div>
         </div>
+        {usageSummary ? (
+          <div className="ml-auto flex items-center gap-2">
+            <div className="text-right leading-tight">
+              <div className="text-[10px] text-muted-foreground">Session tokens</div>
+              <div className="text-[11px] font-medium tabular-nums">
+                {usageSummary.totalTokens.toLocaleString()} ({usageSummary.requests} calls)
+              </div>
+            </div>
+            <Button
+              type="button"
+              variant="outline"
+              size="icon"
+              className="h-7 w-7"
+              title="Copy token usage summary"
+              onClick={onCopyUsage}
+            >
+              <Copy className="h-3.5 w-3.5" />
+            </Button>
+          </div>
+        ) : null}
       </div>
 
       <div ref={scrollRef} className="flex-1 overflow-y-auto p-4 space-y-3">

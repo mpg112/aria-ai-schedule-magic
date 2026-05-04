@@ -110,6 +110,12 @@ function tasksForAIContext(tasks: FlexibleTask[], freeDays: DayKey[]): FlexibleT
 export interface AriaResponse {
   events: ScheduledEvent[];
   explanation: string;
+  usage?: {
+    promptTokens: number;
+    completionTokens: number;
+    totalTokens: number;
+    model?: string;
+  };
 }
 
 interface CallArgs {

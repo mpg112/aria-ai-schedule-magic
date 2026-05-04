@@ -40,6 +40,12 @@ Before you call update_schedule, do a **quick self-check as the calendar owner**
 
 You MUST respond by calling the "update_schedule" tool with the COMPLETE updated event list (replace, not patch) and a short, friendly explanation of what you changed and why.`;
 
+function toNonNegInt(value: unknown): number {
+  const n = Number(value);
+  if (!Number.isFinite(n) || n < 0) return 0;
+  return Math.round(n);
+}
+
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") {
     return new Response(null, { headers: corsHeaders });
@@ -175,8 +181,14 @@ Deno.serve(async (req) => {
     }
 
     const args = JSON.parse(toolCall.function.arguments);
+    const usage = {
+      promptTokens: toNonNegInt(data?.usage?.prompt_tokens),
+      completionTokens: toNonNegInt(data?.usage?.completion_tokens),
+      totalTokens: toNonNegInt(data?.usage?.total_tokens),
+      model: typeof data?.model === "string" ? data.model : undefined,
+    };
 
-    return new Response(JSON.stringify(args), {
+    return new Response(JSON.stringify({ ...args, usage }), {
       headers: { ...corsHeaders, "Content-Type": "application/json" },
     });
   } catch (e) {
