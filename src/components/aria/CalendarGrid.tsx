@@ -1,14 +1,60 @@
-import { useMemo } from "react";
+import { useMemo, useRef, useState } from "react";
 import { Utensils } from "lucide-react";
 import { CATEGORY_META, DAYS, DayKey, ScheduledEvent } from "@/lib/aria-types";
 import { cn } from "@/lib/utils";
-import { computeOverlapColumnLayoutForDay, DayEventOverlapVisual, formatLabel, toMin } from "@/lib/schedule-utils";
+import {
+  computeOverlapColumnLayoutForDay,
+  DayEventOverlapVisual,
+  formatLabel,
+  fromMin,
+  snapMinutesToStep,
+  toMin,
+} from "@/lib/schedule-utils";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 
 const LINE_CLAMP = ["line-clamp-1", "line-clamp-2", "line-clamp-3", "line-clamp-4", "line-clamp-5"] as const;
 
+const DRAG_THRESHOLD_PX = 8;
+
 /** Same template for header + body so day columns line up; minmax(0,1fr) avoids uneven fr tracks. */
 const GRID_COLS = "grid grid-cols-[60px_repeat(7,minmax(0,1fr))]";
+
+type DragPreview = { eventId: string; day: DayKey; startMin: number };
+
+function eventDurationMinutes(ev: ScheduledEvent): number {
+  const a = toMin(ev.start);
+  const b = toMin(ev.end);
+  const d = Number.isFinite(b) && b > a ? b - a : 60;
+  return Math.max(15, Math.round(d / 5) * 5);
+}
+
+function projectedEventsForLayout(events: ScheduledEvent[], dragPreview: DragPreview | null): ScheduledEvent[] {
+  if (!dragPreview) return events;
+  return events.map((e) => {
+    if (e.id !== dragPreview.eventId) return e;
+    const dur = eventDurationMinutes(e);
+    return {
+      ...e,
+      day: dragPreview.day,
+      start: fromMin(dragPreview.startMin),
+      end: fromMin(dragPreview.startMin + dur),
+    };
+  });
+}
+
+function clampDragStartMin(startMin: number, durMin: number, gridStart: number, gridEnd: number): number {
+  let s = snapMinutesToStep(startMin, 15);
+  const maxStart = gridEnd - durMin;
+  if (!Number.isFinite(maxStart)) return s;
+  return Math.max(gridStart, Math.min(maxStart, s));
+}
+
+function isDraggableCalendarEvent(ev: ScheduledEvent, recurringFixedIds: ReadonlySet<string> | undefined): boolean {
+  if (ev.kind === "meal") return false;
+  if (ev.kind === "flexible" || ev.kind === "tentative") return true;
+  if (ev.kind === "fixed" && recurringFixedIds && !recurringFixedIds.has(ev.id)) return true;
+  return false;
+}
 
 /**
  * Title lines from vertical budget (icon sits beside text, so most of the card height is for the title).
@@ -40,27 +86,47 @@ interface Props {
   /** Pixels per hour; controls vertical density (from preferences). */
   hourHeightPx?: number;
   onEventClick?: (e: ScheduledEvent) => void;
+  /** Drag-drop reschedule for flexible / tentative / non-recurring fixed rows. */
+  onEventMove?: (e: ScheduledEvent, next: { day: DayKey; start: string; end: string }) => void;
 }
 
 function overlapTooltipExtra(visual: DayEventOverlapVisual): string | null {
   if (visual === "conflict-muted")
     return "Two fixed blocks overlap here — adjust one or ask Aria to fix it.";
   if (visual === "flex-over-fixed")
-    return "This task crosses a fixed time — drag it in edit or ask Aria to move it.";
+    return "This task crosses a fixed time — drag it to another slot or ask Aria to replan.";
   if (visual === "flex-over-meal")
-    return "This task crosses a meal band — nudge it or ask Aria to replan.";
+    return "This task crosses a meal band — drag it or ask Aria to replan.";
   return null;
 }
 
 export default function CalendarGrid(props: Props) {
-  const { events, dayStart, dayEnd, hourHeightPx = 52, onEventClick } = props;
-  const recurringFixedEventIds = props.recurringFixedEventIds;
+  const { events, dayStart, dayEnd, hourHeightPx = 52, onEventClick, onEventMove, recurringFixedEventIds } = props;
 
   const hourH = Math.min(100, Math.max(28, Math.round(hourHeightPx / 4) * 4));
   const startMin = toMin(dayStart);
   const endMin = toMin(dayEnd);
   const totalMin = endMin - startMin;
   const totalHours = Math.ceil(totalMin / 60);
+
+  const layoutPropsRef = useRef({ hourH, startMin, endMin, totalMin });
+  layoutPropsRef.current = { hourH, startMin, endMin, totalMin };
+
+  const columnRefs = useRef<Partial<Record<DayKey, HTMLDivElement | null>>>({});
+  const suppressClickRef = useRef(false);
+  const dragSessionRef = useRef<{
+    pointerId: number;
+    event: ScheduledEvent;
+    originX: number;
+    originY: number;
+    moved: boolean;
+    element: HTMLElement;
+  } | null>(null);
+
+  const onEventMoveRef = useRef(onEventMove);
+  onEventMoveRef.current = onEventMove;
+
+  const [dragPreview, setDragPreview] = useState<DragPreview | null>(null);
 
   const hours = useMemo(() => {
     const out: number[] = [];
@@ -70,20 +136,103 @@ export default function CalendarGrid(props: Props) {
 
   const today = new Date().toLocaleDateString("en-US", { weekday: "short" }) as DayKey;
 
+  const projectedEvents = useMemo(() => projectedEventsForLayout(events, dragPreview), [events, dragPreview]);
+
   const layoutsByDay = useMemo(() => {
     const m = new Map<DayKey, ReturnType<typeof computeOverlapColumnLayoutForDay>>();
     for (const d of DAYS) {
-      m.set(d, computeOverlapColumnLayoutForDay(events.filter((e) => e.day === d)));
+      m.set(d, computeOverlapColumnLayoutForDay(projectedEvents.filter((e) => e.day === d)));
     }
     return m;
-  }, [events]);
+  }, [projectedEvents]);
+
+  const hitTestColumn = (clientX: number, clientY: number): { day: DayKey; startMin: number } | null => {
+    const { startMin: gs, endMin: ge, totalMin: tm } = layoutPropsRef.current;
+    for (const d of DAYS) {
+      const el = columnRefs.current[d];
+      if (!el) continue;
+      const r = el.getBoundingClientRect();
+      if (clientX < r.left || clientX > r.right || clientY < r.top || clientY > r.bottom) continue;
+      const y = clientY - r.top;
+      const ratio = Math.max(0, Math.min(1, r.height > 0 ? y / r.height : 0));
+      const mins = gs + ratio * tm;
+      return { day: d, startMin: mins };
+    }
+    return null;
+  };
+
+  const attachDragListeners = () => {
+    const sess0 = dragSessionRef.current;
+    if (!sess0) return;
+    const pid = sess0.pointerId;
+
+    const move = (e: PointerEvent) => {
+      const sess = dragSessionRef.current;
+      if (!sess || e.pointerId !== pid) return;
+
+      const dx = e.clientX - sess.originX;
+      const dy = e.clientY - sess.originY;
+      if (!sess.moved && Math.hypot(dx, dy) >= DRAG_THRESHOLD_PX) {
+        sess.moved = true;
+        try {
+          sess.element.setPointerCapture(pid);
+        } catch {
+          /* noop */
+        }
+      }
+      if (!sess.moved) return;
+
+      const hit = hitTestColumn(e.clientX, e.clientY);
+      const { startMin: gs, endMin: ge } = layoutPropsRef.current;
+      const durMin = eventDurationMinutes(sess.event);
+      if (!hit) return;
+      const clamped = clampDragStartMin(hit.startMin, durMin, gs, ge);
+      setDragPreview({ eventId: sess.event.id, day: hit.day, startMin: clamped });
+    };
+
+    const up = (e: PointerEvent) => {
+      if (e.pointerId !== pid) return;
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", up);
+      window.removeEventListener("pointercancel", up);
+
+      const sess = dragSessionRef.current;
+      dragSessionRef.current = null;
+      setDragPreview(null);
+
+      if (sess) {
+        try {
+          sess.element.releasePointerCapture(pid);
+        } catch {
+          /* noop */
+        }
+      }
+
+      if (!sess?.moved) return;
+      suppressClickRef.current = true;
+
+      if (!onEventMoveRef.current) return;
+
+      const hit = hitTestColumn(e.clientX, e.clientY);
+      const { startMin: gs, endMin: ge } = layoutPropsRef.current;
+      const durMin = eventDurationMinutes(sess.event);
+      if (!hit) return;
+
+      const clamped = clampDragStartMin(hit.startMin, durMin, gs, ge);
+      const nextStart = fromMin(clamped);
+      const nextEnd = fromMin(clamped + durMin);
+      const changed =
+        sess.event.day !== hit.day || sess.event.start !== nextStart || sess.event.end !== nextEnd;
+      if (changed) onEventMoveRef.current(sess.event, { day: hit.day, start: nextStart, end: nextEnd });
+    };
+
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", up);
+    window.addEventListener("pointercancel", up);
+  };
 
   return (
     <div className="rounded-xl border bg-card shadow-soft overflow-hidden flex flex-col min-w-0">
-      {/*
-        Single scroll region + sticky header: scrollbar gutter applies once so weekday headers
-        stay aligned with day columns (avoids body-only scrollbar shrinking the grid).
-      */}
       <div className="max-h-[calc(100vh-220px)] min-h-[280px] overflow-y-auto overflow-x-hidden [scrollbar-gutter:stable] overscroll-y-contain">
         <div
           className={cn(
@@ -131,16 +280,20 @@ export default function CalendarGrid(props: Props) {
           </div>
 
           {DAYS.map((d, di) => {
-            const dayEvents = events.filter((e) => e.day === d);
+            const dayEvents = projectedEvents.filter((e) => e.day === d);
             const layoutMap = layoutsByDay.get(d)!;
-            const isToday = d === today;
+            const isTodayCol = d === today;
             return (
               <div
                 key={d}
+                ref={(el) => {
+                  columnRefs.current[d] = el;
+                }}
+                data-calendar-day={d}
                 className={cn(
                   "relative min-w-0",
                   di > 0 && "border-l border-border/60",
-                  isToday && "bg-primary/[0.025]",
+                  isTodayCol && "bg-primary/[0.025]",
                 )}
                 style={{ height: totalHours * hourH }}
               >
@@ -200,6 +353,9 @@ export default function CalendarGrid(props: Props) {
                   const padX = tight ? "px-1 sm:px-1.5" : "px-1.5 sm:px-2";
                   const padY = height < 32 ? "py-0.5" : height < 42 ? "py-1" : "py-1.5";
 
+                  const canDrag = Boolean(onEventMove && isDraggableCalendarEvent(ev, recurringFixedEventIds));
+                  const isDragging = dragPreview?.eventId === ev.id;
+
                   return (
                     <Tooltip key={ev.id} delayDuration={ultra ? 100 : tight ? 200 : 400}>
                       <TooltipTrigger asChild>
@@ -207,7 +363,26 @@ export default function CalendarGrid(props: Props) {
                           type="button"
                           title={ev.title}
                           aria-label={`${ev.title}, ${formatLabel(ev.start)} to ${formatLabel(ev.end)}`}
-                          onClick={() => onEventClick?.(ev)}
+                          {...(canDrag ? { "aria-grabbed": isDragging } : {})}
+                          onClick={() => {
+                            if (suppressClickRef.current) {
+                              suppressClickRef.current = false;
+                              return;
+                            }
+                            onEventClick?.(ev);
+                          }}
+                          onPointerDown={(e) => {
+                            if (!canDrag || e.button !== 0) return;
+                            dragSessionRef.current = {
+                              pointerId: e.pointerId,
+                              event: ev,
+                              originX: e.clientX,
+                              originY: e.clientY,
+                              moved: false,
+                              element: e.currentTarget as HTMLElement,
+                            };
+                            attachDragListeners();
+                          }}
                           className={cn(
                             "absolute flex min-h-0 min-w-0 flex-col rounded-md text-left shadow-sm",
                             padY,
@@ -216,11 +391,13 @@ export default function CalendarGrid(props: Props) {
                             baseColor,
                             ev.kind === "tentative" && "hatched",
                             overlapStyle,
+                            canDrag && "cursor-grab touch-none active:cursor-grabbing",
+                            isDragging && "z-[45] scale-[1.02] shadow-lg ring-2 ring-primary/35",
                           )}
                           style={{
                             top,
                             height,
-                            zIndex: zPaint,
+                            zIndex: zPaint + (isDragging ? 40 : 0),
                             left: leftExpr,
                             width: widthExpr,
                           }}
@@ -257,6 +434,11 @@ export default function CalendarGrid(props: Props) {
                         <p className="text-xs text-muted-foreground mt-1 tabular-nums">
                           {d} · {ev.start}–{ev.end} ({formatLabel(ev.start)} – {formatLabel(ev.end)})
                         </p>
+                        {canDrag ? (
+                          <p className="text-xs text-muted-foreground mt-1.5 leading-snug">
+                            Drag to another day or time to reschedule.
+                          </p>
+                        ) : null}
                         {extra ? <p className="text-xs text-muted-foreground mt-1.5 leading-snug">{extra}</p> : null}
                       </TooltipContent>
                     </Tooltip>

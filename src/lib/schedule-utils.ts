@@ -33,9 +33,16 @@ export function fromMin(min: number): string {
   return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}`;
 }
 
+/** Snap minute-of-day to scheduling grid (default 15-minute increments). */
+export function snapMinutesToStep(minutes: number, stepMin = 15): number {
+  const s = Math.max(5, Math.round(stepMin / 5) * 5);
+  return Math.round(minutes / s) * s;
+}
+
 export function fixedBlocksToEvents(blocks: FixedBlock[]): ScheduledEvent[] {
   const out: ScheduledEvent[] = [];
   for (const b of blocks) {
+    if (!b.days?.length) continue;
     for (const d of b.days) {
       out.push({
         id: `${b.id}-${d}`,
@@ -81,9 +88,15 @@ function dedupeFixedByFingerprint(events: ScheduledEvent[]): ScheduledEvent[] {
   return out;
 }
 
+/** Persisted fixed rows the user locked via the editor — used when merging AI schedule output. */
+export function storedUserPinnedFixedOnly(persistedEvents: ScheduledEvent[]): ScheduledEvent[] {
+  return persistedEvents.filter((e) => e.kind === "fixed" && e.userPinned === true);
+}
+
 /**
- * User-added `kind: "fixed"` rows (not expanded onboarding blocks) must survive AI merges unchanged.
- * Drops AI fixed rows that collide with those by `id` or by day/start/end/title/category fingerprint.
+ * `userPinned` fixed rows (app-created/edited) survive AI merges even when omitted from model output.
+ * Other persisted fixed rows are replaced each turn by the model's `events` list (complete replace semantics).
+ * Drops AI fixed rows that collide with user-pinned rows by `id` or fingerprint.
  */
 export function mergePinnedUserFixedFromState(
   persistedEvents: ScheduledEvent[],
@@ -95,6 +108,7 @@ export function mergePinnedUserFixedFromState(
   const pinned = persistedEvents.filter(
     (e) =>
       e.kind === "fixed" &&
+      e.userPinned === true &&
       !blockIds.has(e.id) &&
       !blockFp.has(fixedEventFingerprint(e)),
   );
@@ -564,8 +578,11 @@ export function mealBreaksToEvents(
   const mealMetaById = new Map<string, MealWindowMeta>();
   const placedByDay = new Map<DayKey, MinuteIv[]>();
 
+  const skipForMeal = (m: MealBreak) => new Set(m.skipDays ?? []);
   for (const m of sorted) {
+    const skip = skipForMeal(m);
     for (const d of m.days) {
+      if (skip.has(d)) continue;
       const ws = toMin(m.windowStart);
       const we = toMin(m.windowEnd);
       const dur = m.durationMin;
@@ -668,6 +685,7 @@ export function bumpFlexEventsClearOfMeals(
       if (dur <= 0) continue;
 
       if (!overlapsMealOnDay(f.day, s0, e0)) continue;
+      if (f.overlapDespiteFixed) continue;
 
       const blocked = mergeMinuteIvs([
         ...fixedIntervalsForDay(f.day, fixedOnly),
@@ -766,6 +784,12 @@ export function resolveFlexTentativeOverlaps(
         if (!Number.isFinite(eM) || eM <= s) eM = s + 60;
         const durRaw = eM - s;
         const dur = Math.max(15, Math.round(durRaw / 5) * 5);
+
+        if (e.overlapDespiteFixed) {
+          s = Math.max(s, morning);
+          placedFlex = mergeMinuteIvs([...placedFlex, { s, e: s + dur }]);
+          continue;
+        }
 
         s = Math.max(s, morning);
 

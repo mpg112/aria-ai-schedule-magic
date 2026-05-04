@@ -1,5 +1,5 @@
 import { supabase } from "@/integrations/supabase/client";
-import { AriaState, ChatMessage, DAYS, DayKey, FlexibleTask, ScheduledEvent } from "./aria-types";
+import { AriaState, ChatMessage, DAYS, DayKey, FixedBlock, FlexibleTask, MealBreak, ScheduledEvent } from "./aria-types";
 import {
   allFixedEventsForScheduling,
   bumpFlexEventsClearOfMeals,
@@ -110,6 +110,10 @@ function tasksForAIContext(tasks: FlexibleTask[], freeDays: DayKey[]): FlexibleT
 export interface AriaResponse {
   events: ScheduledEvent[];
   explanation: string;
+  /** Optional: merge into persisted meal rules (existing ids only). */
+  mealBreakUpdates?: Array<Partial<MealBreak> & { id: string }>;
+  /** Optional: merge into persisted fixed weekly blocks (existing ids only). */
+  fixedBlockUpdates?: Array<Partial<FixedBlock> & { id: string }>;
   usage?: {
     promptTokens: number;
     completionTokens: number;
@@ -142,9 +146,17 @@ export async function callAria({ state, history, userMessage }: CallArgs): Promi
   const flexBumped = bumpFlexEventsClearOfMeals(flexPacked, mealSlotsPlaced, fixedSlots);
   const nonFlexEvents = state.events.filter((e) => e.kind !== "flexible" && e.kind !== "tentative");
 
+  const dinnerBreak = (state.mealBreaks ?? []).find((m) => m.kind === "dinner");
   const context = {
     fixedBlocks: state.fixedBlocks,
     mealBreaks: state.mealBreaks ?? [],
+    /** Helps the model emit correct mealBreakUpdates / fixedBlockUpdates ids when replacing routine dinner. */
+    ariaStructuralHints: {
+      dinnerMealBreakId: dinnerBreak?.id,
+      fridayFixedBlocks: state.fixedBlocks
+        .filter((b) => b.days.includes("Fri"))
+        .map((b) => ({ id: b.id, title: b.title, start: b.start, end: b.end })),
+    },
     /** Exact meal intervals after client placement (meals avoid fixed + flex when possible; flex may still be nudged for AI context). */
     mealSlotsPlaced: mealSlotsPlaced.map((e) => ({
       day: e.day,

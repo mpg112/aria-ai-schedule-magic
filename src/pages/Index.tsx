@@ -11,11 +11,13 @@ import CalendarGrid from "@/components/aria/CalendarGrid";
 import ChatPanel from "@/components/aria/ChatPanel";
 import AddCommitmentModal, { NewCommitment } from "@/components/aria/AddCommitmentModal";
 import ProfileSwitcher from "@/components/aria/ProfileSwitcher";
-import EditScheduledEventModal from "@/components/aria/EditScheduledEventModal";
+import EditScheduledEventModal, { findOnceTaskForEvent } from "@/components/aria/EditScheduledEventModal";
 import {
   AriaState,
   CALENDAR_DENSITY_OPTIONS,
   ChatMessage,
+  ChatOverlapPrompt,
+  DayKey,
   EMPTY_STATE,
   ProfilesRootState,
   ScheduledEvent,
@@ -33,15 +35,29 @@ import {
   allFixedEventsForScheduling,
   enrichEventsWithTaskEmojis,
   ensureWeeklyFlexibleMinPlacements,
+  eventsTimeOverlap,
   fixedBlocksToEvents,
   fromMin,
   mealBreaksToEvents,
   mergePinnedUserFixedFromState,
   mergeDayBoundsForCalendar,
+  storedUserPinnedFixedOnly,
   resolveFlexTentativeOverlaps,
   toMin,
 } from "@/lib/schedule-utils";
 import { callAria } from "@/lib/aria-client";
+import {
+  applyAriaScheduleSettingsPatch,
+  hasStructuralSchedulePatch,
+  type AriaScheduleSettingsPatch,
+} from "@/lib/schedule-settings-patch";
+import {
+  inferFridayFriendsDinner730FixedEvent,
+  inferReplacementDinnerFixedEvent,
+  inferStandingDinnerRemovalPatch,
+  stripConflictingReplacementFlexRows,
+} from "@/lib/chat-schedule-inference";
+import { findOverlapOfferContext } from "@/lib/overlap-offer";
 import { getDemoState } from "@/lib/demo-data";
 import { consumeShareTokenOnce, decodeShareSnapshot, encodeShareSnapshot } from "@/lib/share-snapshot";
 
@@ -238,21 +254,52 @@ const Index = () => {
         history: base.chat,
         userMessage: userText,
       });
-      const noMeals = res.events.filter((e) => e.kind !== "meal" && !String(e.id).startsWith("meal-"));
+      const aiSettingsPatch: AriaScheduleSettingsPatch | undefined =
+        (res.mealBreakUpdates?.length ?? 0) > 0 || (res.fixedBlockUpdates?.length ?? 0) > 0
+          ? { mealBreakUpdates: res.mealBreakUpdates, fixedBlockUpdates: res.fixedBlockUpdates }
+          : undefined;
+
+      let patchedFixed = base.fixedBlocks;
+      let patchedMeals = base.mealBreaks ?? [];
+      if (hasStructuralSchedulePatch(aiSettingsPatch)) {
+        const r = applyAriaScheduleSettingsPatch(patchedFixed, patchedMeals, aiSettingsPatch);
+        patchedFixed = r.fixedBlocks;
+        patchedMeals = r.mealBreaks;
+      }
+      /** Merge inferred removal after AI patches so a weak/wrong model patch cannot leave standing dinner in place. */
+      const inferredRemoval = inferStandingDinnerRemovalPatch(userText, patchedFixed, patchedMeals);
+      if (inferredRemoval) {
+        const r2 = applyAriaScheduleSettingsPatch(patchedFixed, patchedMeals, inferredRemoval);
+        patchedFixed = r2.fixedBlocks;
+        patchedMeals = r2.mealBreaks;
+      }
+      let noMeals = res.events.filter((e) => e.kind !== "meal" && !String(e.id).startsWith("meal-"));
+      const replacementFixed = inferReplacementDinnerFixedEvent(userText, noMeals);
+      if (replacementFixed) {
+        noMeals = stripConflictingReplacementFlexRows(noMeals, replacementFixed, userText);
+        noMeals = [...noMeals, replacementFixed];
+      } else {
+        const inferredFriends = inferFridayFriendsDinner730FixedEvent(userText, noMeals);
+        if (inferredFriends) noMeals = [...noMeals, inferredFriends];
+      }
       const flexBase = noMeals.filter((e) => e.kind === "flexible" || e.kind === "tentative");
-      const blockFixed = fixedBlocksToEvents(base.fixedBlocks);
-      const fixedEv = allFixedEventsForScheduling({ fixedBlocks: base.fixedBlocks, events: base.events });
+      const blockFixed = fixedBlocksToEvents(patchedFixed);
+      const aiFixedPreview = noMeals.filter((e) => e.kind === "fixed");
+      const fixedEv = allFixedEventsForScheduling({
+        fixedBlocks: patchedFixed,
+        events: [...storedUserPinnedFixedOnly(base.events), ...aiFixedPreview],
+      });
       const flexFilled = ensureWeeklyFlexibleMinPlacements(
         base.tasks,
         flexBase,
         fixedEv,
-        base.mealBreaks ?? [],
+        patchedMeals,
         base.preferences,
       );
       const flexPacked = resolveFlexTentativeOverlaps(
         flexFilled,
         fixedEv,
-        base.mealBreaks ?? [],
+        patchedMeals,
         base.preferences,
       );
       const aiFixed = noMeals.filter((e) => e.kind === "fixed");
@@ -261,9 +308,39 @@ const Index = () => {
         (e) => e.kind !== "flexible" && e.kind !== "tentative" && e.kind !== "fixed",
       );
       const mergedEvents = [...other, ...mergedFixed, ...flexPacked];
-      const aiMsg: ChatMessage = { role: "assistant", content: res.explanation, timestamp: Date.now() };
+
+      const overlapOffer =
+        !opts?.silent &&
+        findOverlapOfferContext({
+          userMessage: userText,
+          flexBeforeResolve: flexFilled,
+          flexAfterResolve: flexPacked,
+          fixedEvents: fixedEv,
+        });
+
+      const aiMsg: ChatMessage = {
+        role: "assistant",
+        content: overlapOffer
+          ? `${res.explanation}\n\nYour requested time overlaps fixed commitments (${overlapOffer.conflictSummaries.join("; ")}). Want to place it there anyway so it overlaps on the calendar?`
+          : res.explanation,
+        timestamp: Date.now(),
+        ...(overlapOffer
+          ? {
+              overlapPrompt: {
+                promptId: uid(),
+                candidateId: overlapOffer.candidateId,
+                intentDay: overlapOffer.intentDay,
+                intentStartMin: overlapOffer.intentStartMin,
+                intentDurationMin: overlapOffer.intentDurationMin,
+                conflictSummaries: overlapOffer.conflictSummaries,
+              },
+            }
+          : {}),
+      };
       setAria((s) => ({
         ...s,
+        fixedBlocks: patchedFixed,
+        mealBreaks: patchedMeals,
         events: mergedEvents,
         chat: opts?.silent ? [...s.chat, aiMsg] : [...newHistory, aiMsg],
       }));
@@ -311,6 +388,7 @@ const Index = () => {
             kind: "fixed",
             category: c.category,
             priority: c.priority,
+            userPinned: true,
           }
         : null;
     const stateOverride = clientPinned ? { ...state, events: [...state.events, clientPinned] } : undefined;
@@ -341,6 +419,111 @@ const Index = () => {
       setCalendarEditEvent(ev);
     }
   };
+
+  const handleCalendarEventMove = useCallback(
+    (ev: ScheduledEvent, next: { day: DayKey; start: string; end: string }) => {
+      setAria((s) => {
+        const idx = s.events.findIndex((e) => e.id === ev.id);
+        if (idx < 0) return s;
+        const prevRow = s.events[idx]!;
+        const phantom: ScheduledEvent = {
+          ...prevRow,
+          day: next.day,
+          start: next.start,
+          end: next.end,
+        };
+        const fixedSlots = allFixedEventsForScheduling({
+          fixedBlocks: s.fixedBlocks,
+          events: s.events.filter((e) => e.id !== ev.id),
+        });
+        const overlapsFixed =
+          (ev.kind === "flexible" || ev.kind === "tentative") &&
+          fixedSlots.some(
+            (f) => f.kind === "fixed" && f.day === next.day && eventsTimeOverlap(f, phantom),
+          );
+
+        const updatedEv: ScheduledEvent = {
+          ...prevRow,
+          day: next.day,
+          start: next.start,
+          end: next.end,
+        };
+        if (ev.kind === "flexible" || ev.kind === "tentative") {
+          if (overlapsFixed) updatedEv.overlapDespiteFixed = true;
+          else delete updatedEv.overlapDespiteFixed;
+        }
+        const events = s.events.slice();
+        events[idx] = updatedEv;
+
+        const linked = findOnceTaskForEvent(ev, s.tasks);
+        let tasks = s.tasks;
+        if (linked && (ev.kind === "flexible" || ev.kind === "tentative")) {
+          tasks = s.tasks.map((t) => {
+            if (t.id !== linked.id) return t;
+            return normalizeFlexibleTask({
+              ...t,
+              preferredWeekdays: [next.day],
+              preferredTimeStyle: "windows",
+              preferredTimeWindows: [{ start: next.start, end: next.end }],
+            });
+          });
+        }
+
+        return { ...s, events, tasks };
+      });
+      toast.success("Moved");
+    },
+    [setAria],
+  );
+
+  const handleOverlapPromptResolve = useCallback(
+    (prompt: ChatOverlapPrompt, accept: boolean) => {
+      setAria((s) => {
+        const chat = s.chat.map((m) =>
+          m.overlapPrompt?.promptId === prompt.promptId ? { ...m, overlapPrompt: undefined } : m,
+        );
+        if (!accept) return { ...s, chat };
+
+        const idx = s.events.findIndex((e) => e.id === prompt.candidateId);
+        if (idx < 0) return { ...s, chat };
+
+        const prev = s.events[idx]!;
+        const nextStart = fromMin(prompt.intentStartMin);
+        const nextEnd = fromMin(prompt.intentStartMin + prompt.intentDurationMin);
+        const updatedEv: ScheduledEvent = {
+          ...prev,
+          day: prompt.intentDay,
+          start: nextStart,
+          end: nextEnd,
+          overlapDespiteFixed: true,
+        };
+        const events = s.events.slice();
+        events[idx] = updatedEv;
+
+        const linked = findOnceTaskForEvent(prev, s.tasks);
+        let tasks = s.tasks;
+        if (linked && (prev.kind === "flexible" || prev.kind === "tentative")) {
+          tasks = s.tasks.map((t) => {
+            if (t.id !== linked.id) return t;
+            return normalizeFlexibleTask({
+              ...t,
+              preferredWeekdays: [prompt.intentDay],
+              preferredTimeStyle: "windows",
+              preferredTimeWindows: [{ start: nextStart, end: nextEnd }],
+            });
+          });
+        }
+
+        return { ...s, events, chat, tasks };
+      });
+      toast.success(
+        accept
+          ? "Placed at your requested time — overlaps fixed commitments on the calendar."
+          : "Keeping the adjusted placement.",
+      );
+    },
+    [setAria],
+  );
 
   const handleStartAddUser = (name: string) => {
     setScheduleSettingsOpen(false);
@@ -515,6 +698,7 @@ const Index = () => {
               recurringFixedEventIds={recurringFixedEventIds}
               hourHeightPx={state.preferences.calendarHourHeightPx}
               onEventClick={handleCalendarEventClick}
+              onEventMove={handleCalendarEventMove}
             />
             <Legend />
           </div>
@@ -524,6 +708,7 @@ const Index = () => {
               onSend={(t) => sendToAria(t)}
               loading={loading}
               generateWeekMessage={GENERATE_FULL_WEEK_USER_MESSAGE}
+              onOverlapPromptResolve={handleOverlapPromptResolve}
             />
           </div>
       </main>
@@ -592,7 +777,8 @@ function Legend() {
   return (
     <div className="flex flex-wrap items-center gap-x-4 gap-y-1.5 px-1 text-[11px] text-muted-foreground">
       <span className="basis-full text-[10px] text-muted-foreground/90">
-        Category colors: flexible tasks and fixed-time commitments — not onboarding recurring blocks.
+        Category colors: flexible tasks and fixed-time commitments — not onboarding recurring blocks. Drag tasks or
+        one-off fixed commitments to another day or time (snaps to 15 minutes).
       </span>
       {items.map((i) => (
         <div key={i.label} className="flex items-center gap-1.5">

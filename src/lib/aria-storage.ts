@@ -19,6 +19,15 @@ const KEY = "aria-state-v1";
 export const uid = () =>
   Math.random().toString(36).slice(2, 10) + Date.now().toString(36).slice(-4);
 
+/** Persisted chat cannot replay overlap prompts — strip interactive payloads when loading/saving. */
+export function sanitizeChatForPersist(messages: ChatMessage[]): ChatMessage[] {
+  return messages.map(({ role, content, timestamp }) => ({
+    role: role === "assistant" ? "assistant" : "user",
+    content: typeof content === "string" ? content : "",
+    timestamp: typeof timestamp === "number" ? timestamp : Date.now(),
+  }));
+}
+
 /** Normalize persisted or URL-imported Aria JSON into a full `AriaState`. */
 export function normalizeLoadedAria(parsed: Partial<AriaState> & Record<string, unknown>): AriaState {
   const rawEvents = (parsed as { events?: unknown }).events;
@@ -30,7 +39,9 @@ export function normalizeLoadedAria(parsed: Partial<AriaState> & Record<string, 
   const fixedBlocks: FixedBlock[] = Array.isArray(rawFixed) ? (rawFixed as FixedBlock[]) : EMPTY_STATE.fixedBlocks;
 
   const rawChat = (parsed as { chat?: unknown }).chat;
-  const chat: ChatMessage[] = Array.isArray(rawChat) ? (rawChat as ChatMessage[]) : EMPTY_STATE.chat;
+  const chat: ChatMessage[] = Array.isArray(rawChat)
+    ? sanitizeChatForPersist(rawChat as ChatMessage[])
+    : EMPTY_STATE.chat;
 
   const onboarded = typeof parsed.onboarded === "boolean" ? parsed.onboarded : EMPTY_STATE.onboarded;
 
@@ -131,9 +142,13 @@ export function loadProfilesRoot(): ProfilesRootState {
 
 export function saveProfilesRoot(root: ProfilesRootState) {
   const normalized = normalizeProfilesRoot(root);
+  const profiles = normalized.profiles.map((p) => ({
+    ...p,
+    aria: { ...p.aria, chat: sanitizeChatForPersist(p.aria.chat) },
+  }));
   localStorage.setItem(
     KEY,
-    JSON.stringify({ schema: 2, activeProfileId: normalized.activeProfileId, profiles: normalized.profiles }),
+    JSON.stringify({ schema: 2, activeProfileId: normalized.activeProfileId, profiles }),
   );
 }
 

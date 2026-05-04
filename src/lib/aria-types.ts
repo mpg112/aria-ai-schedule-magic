@@ -61,6 +61,8 @@ export interface MealBreak {
   kind: MealKind;
   enabled: boolean;
   days: DayKey[];
+  /** Optional one-off skips (e.g. Fri dinner off when replaced by a fixed social plan). Still counted in `days` for the rule. */
+  skipDays?: DayKey[];
   /** Meal must fit entirely inside this window (24h HH:MM). */
   windowStart: string;
   windowEnd: string;
@@ -93,6 +95,8 @@ export function normalizeMealBreak(raw: Partial<MealBreak> & { id?: string; plac
   const daySet = new Set(DAYS);
   const rawDayList = raw.days === undefined || raw.days === null ? [...DAYS] : [...raw.days];
   const days = rawDayList.filter((d): d is DayKey => daySet.has(d as DayKey));
+  const rawSkip = raw.skipDays === undefined || raw.skipDays === null ? [] : [...raw.skipDays];
+  const skipDays = [...new Set(rawSkip.filter((d): d is DayKey => daySet.has(d as DayKey)))];
 
   let ws = mealToMin(typeof raw.windowStart === "string" ? raw.windowStart : "07:00");
   let we = mealToMin(typeof raw.windowEnd === "string" ? raw.windowEnd : "09:00");
@@ -104,7 +108,7 @@ export function normalizeMealBreak(raw: Partial<MealBreak> & { id?: string; plac
     we = ws + durationMin;
   }
 
-  return {
+  const out: MealBreak = {
     id,
     kind,
     enabled: typeof raw.enabled === "boolean" ? raw.enabled : true,
@@ -113,6 +117,8 @@ export function normalizeMealBreak(raw: Partial<MealBreak> & { id?: string; plac
     windowEnd: mealFromMin(we),
     durationMin,
   };
+  if (skipDays.length) out.skipDays = skipDays;
+  return out;
 }
 
 /** Stable ids so preset breakfast / lunch / dinner rows stay identifiable in the UI. */
@@ -331,6 +337,23 @@ export interface ScheduledEvent {
   priority?: Priority;
   /** UI: when set (e.g. from task / custom category), calendar shows this instead of category default. */
   emoji?: string;
+  /**
+   * Fixed rows the user created/edited in the app are kept across chat turns even if omitted from the model output.
+   * AI-added fixed commitments omit this field so later chats can replace them.
+   */
+  userPinned?: boolean;
+  /** Flexible/tentative: keep exact placement even when it overlaps fixed blocks (user confirmed in chat). */
+  overlapDespiteFixed?: boolean;
+}
+
+/** Inline Yes/No after assistant explains a bumped time vs requested overlap with fixed blocks. */
+export interface ChatOverlapPrompt {
+  promptId: string;
+  candidateId: string;
+  intentDay: DayKey;
+  intentStartMin: number;
+  intentDurationMin: number;
+  conflictSummaries: string[];
 }
 
 /** AI may reuse the same id for multiple flex rows; the calendar dedupes by id so only one block shows. */
@@ -380,6 +403,7 @@ export interface ChatMessage {
   role: "user" | "assistant";
   content: string;
   timestamp: number;
+  overlapPrompt?: ChatOverlapPrompt;
 }
 
 export interface AriaState {

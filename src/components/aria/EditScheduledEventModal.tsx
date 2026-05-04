@@ -82,6 +82,7 @@ export default function EditScheduledEventModal({ event, tasks, onClose, onSave 
       title: title.trim() || event.title,
       priority,
       category,
+      ...(event.kind === "fixed" ? { userPinned: true as const } : {}),
     };
     let taskSync: { taskId: string; patch: Partial<FlexibleTask> } | undefined;
     if (linkedOnce) {

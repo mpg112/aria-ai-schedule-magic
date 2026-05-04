@@ -2,7 +2,7 @@ import { useState, useRef, useEffect } from "react";
 import { Copy, Loader2, Send, Sparkles } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
-import { ChatMessage } from "@/lib/aria-types";
+import { ChatMessage, ChatOverlapPrompt } from "@/lib/aria-types";
 import { cn } from "@/lib/utils";
 
 interface Props {
@@ -18,6 +18,8 @@ interface Props {
     totalTokens: number;
   };
   onCopyUsage?: () => void;
+  /** Resolve overlap confirmation chips on the last assistant turn (calendar bump vs fixed blocks). */
+  onOverlapPromptResolve?: (prompt: ChatOverlapPrompt, accept: boolean) => void;
 }
 
 const QUICK = [
@@ -34,6 +36,7 @@ export default function ChatPanel({
   generateWeekMessage,
   usageSummary,
   onCopyUsage,
+  onOverlapPromptResolve,
 }: Props) {
   const [input, setInput] = useState("");
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -113,7 +116,7 @@ export default function ChatPanel({
           </div>
         )}
         {messages.map((m, i) => (
-          <div key={i} className={cn("flex", m.role === "user" ? "justify-end" : "justify-start")}>
+          <div key={`${m.timestamp}-${i}`} className={cn("flex", m.role === "user" ? "justify-end" : "justify-start")}>
             <div
               className={cn(
                 "max-w-[88%] rounded-2xl px-3.5 py-2 text-sm leading-relaxed whitespace-pre-wrap",
@@ -123,6 +126,33 @@ export default function ChatPanel({
               )}
             >
               {m.content}
+              {m.role === "assistant" && m.overlapPrompt && onOverlapPromptResolve ? (
+                <div className="mt-3 pt-2 border-t border-border/60 space-y-2">
+                  <p className="text-xs text-muted-foreground leading-snug">
+                    Fixed commitments involved:{" "}
+                    <span className="font-medium text-foreground">{m.overlapPrompt.conflictSummaries.join(" · ")}</span>
+                  </p>
+                  <div className="flex flex-wrap gap-2">
+                    <Button
+                      type="button"
+                      size="sm"
+                      disabled={loading}
+                      onClick={() => onOverlapPromptResolve(m.overlapPrompt!, true)}
+                    >
+                      Yes, overlap them
+                    </Button>
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="outline"
+                      disabled={loading}
+                      onClick={() => onOverlapPromptResolve(m.overlapPrompt!, false)}
+                    >
+                      No, keep the adjusted time
+                    </Button>
+                  </div>
+                </div>
+              ) : null}
             </div>
           </div>
         ))}
