@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect } from "react";
-import { Copy, Loader2, Send, Sparkles } from "lucide-react";
+import { BarChart3, Copy, Loader2, Send, Sparkles } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { ChatMessage, ChatOverlapPrompt } from "@/lib/aria-types";
@@ -18,6 +18,7 @@ interface Props {
     totalTokens: number;
   };
   onCopyUsage?: () => void;
+  onOpenUsageReport?: () => void;
   /** Resolve overlap confirmation chips on the last assistant turn (calendar bump vs fixed blocks). */
   onOverlapPromptResolve?: (prompt: ChatOverlapPrompt, accept: boolean) => void;
 }
@@ -36,6 +37,7 @@ export default function ChatPanel({
   generateWeekMessage,
   usageSummary,
   onCopyUsage,
+  onOpenUsageReport,
   onOverlapPromptResolve,
 }: Props) {
   const [input, setInput] = useState("");
@@ -62,26 +64,36 @@ export default function ChatPanel({
           <div className="text-sm font-semibold leading-tight">Aria</div>
           <div className="text-[11px] text-muted-foreground">Your scheduling assistant</div>
         </div>
-        {usageSummary ? (
-          <div className="ml-auto flex items-center gap-2">
-            <div className="text-right leading-tight">
-              <div className="text-[10px] text-muted-foreground">Session tokens</div>
-              <div className="text-[11px] font-medium tabular-nums">
-                {usageSummary.totalTokens.toLocaleString()} ({usageSummary.requests} calls)
-              </div>
+        <div className="ml-auto flex items-center gap-2">
+          <div className="text-right leading-tight">
+            <div className="text-[10px] text-muted-foreground">Session tokens</div>
+            <div className="text-[11px] font-medium tabular-nums">
+              {usageSummary ? `${usageSummary.totalTokens.toLocaleString()} (${usageSummary.requests} calls)` : "0 (0 calls)"}
             </div>
-            <Button
-              type="button"
-              variant="outline"
-              size="icon"
-              className="h-7 w-7"
-              title="Copy token usage summary"
-              onClick={onCopyUsage}
-            >
-              <Copy className="h-3.5 w-3.5" />
-            </Button>
           </div>
-        ) : null}
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            className="h-7 px-2 text-[11px]"
+            title="Open token usage report"
+            onClick={onOpenUsageReport}
+          >
+            <BarChart3 className="h-3.5 w-3.5 mr-1" />
+            Usage
+          </Button>
+          <Button
+            type="button"
+            variant="outline"
+            size="icon"
+            className="h-7 w-7"
+            title="Copy token usage summary"
+            onClick={onCopyUsage}
+            disabled={!usageSummary}
+          >
+            <Copy className="h-3.5 w-3.5" />
+          </Button>
+        </div>
       </div>
 
       <div ref={scrollRef} className="flex-1 overflow-y-auto p-4 space-y-3">

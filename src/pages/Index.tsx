@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Button } from "@/components/ui/button";
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { toast } from "sonner";
@@ -67,6 +68,17 @@ let urlBootstrapPresetDemoRan = false;
 const GENERATE_FULL_WEEK_USER_MESSAGE =
   "Please generate my full week now. Place all my flexible tasks around the fixed blocks, respecting my preferences and priorities. Return the complete schedule.";
 
+interface TokenUsageEntry {
+  id: string;
+  timestamp: number;
+  userText: string;
+  promptTokens: number | null;
+  completionTokens: number | null;
+  totalTokens: number | null;
+  model?: string;
+  source: "reported" | "estimated" | "unavailable";
+}
+
 const Index = () => {
   const [profilesRoot, setProfilesRoot] = useState<ProfilesRootState>(createDefaultProfilesRoot());
   const [hydrated, setHydrated] = useState(false);
@@ -78,6 +90,8 @@ const Index = () => {
   const [pendingNewUserName, setPendingNewUserName] = useState<string | null>(null);
   const [newUserWizardKey, setNewUserWizardKey] = useState(0);
   const [calendarEditEvent, setCalendarEditEvent] = useState<ScheduledEvent | null>(null);
+  const [usageLog, setUsageLog] = useState<TokenUsageEntry[]>([]);
+  const [usageOpen, setUsageOpen] = useState(false);
   /** After in-app welcome/intro/step preview, without waiting for another storage read. */
   const [preambleDismissed, setPreambleDismissed] = useState(false);
 
@@ -190,6 +204,16 @@ const Index = () => {
     [state.preferences.dayStart, state.preferences.dayEnd, allEvents],
   );
 
+  const usageSummary = useMemo(() => {
+    if (usageLog.length === 0) return undefined;
+    return {
+      requests: usageLog.length,
+      promptTokens: usageLog.reduce((sum, row) => sum + (row.promptTokens ?? 0), 0),
+      completionTokens: usageLog.reduce((sum, row) => sum + (row.completionTokens ?? 0), 0),
+      totalTokens: usageLog.reduce((sum, row) => sum + (row.totalTokens ?? 0), 0),
+    };
+  }, [usageLog]);
+
   const handleWizardComplete = async (next: AriaState) => {
     if (newUserWizardOpen && pendingNewUserName) {
       const id = uid();
@@ -254,6 +278,19 @@ const Index = () => {
         history: base.chat,
         userMessage: userText,
       });
+      setUsageLog((prev) => [
+        ...prev,
+        {
+          id: uid(),
+          timestamp: Date.now(),
+          userText,
+          promptTokens: res.usage?.promptTokens ?? null,
+          completionTokens: res.usage?.completionTokens ?? null,
+          totalTokens: res.usage?.totalTokens ?? null,
+          model: res.usage?.model,
+          source: res.usage?.source ?? "unavailable",
+        },
+      ]);
       const aiSettingsPatch: AriaScheduleSettingsPatch | undefined =
         (res.mealBreakUpdates?.length ?? 0) > 0 || (res.fixedBlockUpdates?.length ?? 0) > 0
           ? { mealBreakUpdates: res.mealBreakUpdates, fixedBlockUpdates: res.fixedBlockUpdates }
@@ -399,6 +436,31 @@ const Index = () => {
     setAria(() => getDemoState());
     toast.success("Demo data loaded for this calendar — use chat to have Aria plan the week.");
   };
+
+  const copyUsageReport = useCallback(() => {
+    const header = usageSummary
+      ? `Requests: ${usageSummary.requests}\nPrompt tokens: ${usageSummary.promptTokens}\nCompletion tokens: ${usageSummary.completionTokens}\nTotal tokens: ${usageSummary.totalTokens}\n`
+      : "No token usage captured yet.\n";
+    const rows = usageLog
+      .map((row, i) => {
+        const t = new Date(row.timestamp).toLocaleString();
+        return [
+          `#${i + 1} - ${t}`,
+          `User: ${row.userText}`,
+          `Prompt: ${row.promptTokens ?? "missing from backend response"}`,
+          `Completion: ${row.completionTokens ?? "missing from backend response"}`,
+          `Total: ${row.totalTokens ?? "missing from backend response"}`,
+          `Source: ${row.source === "reported" ? "provider-reported" : row.source === "estimated" ? "estimated" : "unavailable"}`,
+          row.model ? `Model: ${row.model}` : null,
+          "",
+        ]
+          .filter(Boolean)
+          .join("\n");
+      })
+      .join("\n");
+    void navigator.clipboard.writeText(`${header}\n${rows}`.trim());
+    toast.success("Token report copied.");
+  }, [usageLog, usageSummary]);
 
   const resetAll = () => {
     if (!confirm("Reset all profiles and calendars on this device?")) return;
@@ -705,13 +767,62 @@ const Index = () => {
           <div className="h-[min(420px,52vh)] lg:h-[calc(100vh-100px)] lg:sticky lg:top-[76px]">
             <ChatPanel
               messages={state.chat}
-              onSend={(t) => sendToAria(t)}
+              onSend={async (t) => {
+                await sendToAria(t);
+              }}
               loading={loading}
               generateWeekMessage={GENERATE_FULL_WEEK_USER_MESSAGE}
+              usageSummary={usageSummary}
+              onCopyUsage={copyUsageReport}
+              onOpenUsageReport={() => setUsageOpen(true)}
               onOverlapPromptResolve={handleOverlapPromptResolve}
             />
           </div>
       </main>
+
+      <Dialog open={usageOpen} onOpenChange={setUsageOpen}>
+        <DialogContent className="sm:max-w-2xl">
+          <DialogHeader>
+            <DialogTitle>Token usage report</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-3">
+            <div className="rounded-lg border p-3 text-sm">
+              <div>Requests: {usageSummary?.requests ?? 0}</div>
+              <div>Input (prompt) tokens: {usageSummary?.promptTokens.toLocaleString() ?? 0}</div>
+              <div>Output (completion) tokens: {usageSummary?.completionTokens.toLocaleString() ?? 0}</div>
+              <div className="font-medium">Total tokens: {usageSummary?.totalTokens.toLocaleString() ?? 0}</div>
+            </div>
+            {usageLog.length === 0 ? (
+              <div className="text-sm text-muted-foreground">No requests yet. Send a chat message first.</div>
+            ) : (
+              <div className="max-h-[50vh] overflow-y-auto space-y-2 pr-1">
+                {usageLog.map((row, idx) => (
+                  <div key={row.id} className="rounded-lg border p-3 text-xs space-y-1">
+                    <div className="font-medium text-sm">Request {idx + 1}</div>
+                    <div className="text-muted-foreground">{new Date(row.timestamp).toLocaleString()}</div>
+                    <div className="text-foreground">Input: {row.promptTokens ?? "missing from backend response"}</div>
+                    <div className="text-foreground">Output: {row.completionTokens ?? "missing from backend response"}</div>
+                    <div className="text-foreground">Total: {row.totalTokens ?? "missing from backend response"}</div>
+                    <div className="text-muted-foreground">
+                      Source: {row.source === "reported" ? "provider-reported (exact)" : row.source === "estimated" ? "estimated fallback" : "unavailable"}
+                    </div>
+                    {row.model ? <div className="text-muted-foreground">Model: {row.model}</div> : null}
+                    <div className="text-muted-foreground break-words">Message: {row.userText}</div>
+                  </div>
+                ))}
+              </div>
+            )}
+            <div className="flex items-center gap-2">
+              <Button type="button" variant="outline" onClick={copyUsageReport} disabled={usageLog.length === 0}>
+                Copy report
+              </Button>
+              <Button type="button" variant="ghost" onClick={() => setUsageLog([])} disabled={usageLog.length === 0}>
+                Clear
+              </Button>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
 
       <OnboardingWizard
         key={wizardKey}

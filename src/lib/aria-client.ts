@@ -119,6 +119,7 @@ export interface AriaResponse {
     completionTokens: number;
     totalTokens: number;
     model?: string;
+    source?: "reported" | "estimated" | "unavailable";
   };
 }
 
@@ -126,6 +127,29 @@ interface CallArgs {
   state: AriaState;
   history: ChatMessage[];
   userMessage: string;
+}
+
+function estimateTokensFromText(text: string): number {
+  const clean = text.trim();
+  if (!clean) return 0;
+  /**
+   * Hybrid heuristic:
+   * - chars/4 works decently for English prose
+   * - words*1.33 helps with short text where chars/4 can undercount
+   * We take the larger value for safer (cost-aware) estimates.
+   */
+  const charsBased = clean.length / 4;
+  const words = clean.split(/\s+/).filter(Boolean).length;
+  const wordsBased = words * 1.33;
+  return Math.max(1, Math.round(Math.max(charsBased, wordsBased)));
+}
+
+function estimateTokensFromUnknown(value: unknown): number {
+  try {
+    return estimateTokensFromText(JSON.stringify(value ?? ""));
+  } catch {
+    return 0;
+  }
 }
 
 export async function callAria({ state, history, userMessage }: CallArgs): Promise<AriaResponse> {
@@ -168,9 +192,10 @@ export async function callAria({ state, history, userMessage }: CallArgs): Promi
     preferences: state.preferences,
     currentEvents: [...nonFlexEvents, ...flexBumped],
   };
+  const requestPayloadForEstimate = { messages, context };
 
   const { data, error } = await supabase.functions.invoke("aria-ai", {
-    body: { messages, context },
+    body: requestPayloadForEstimate,
   });
 
   if (error) {
@@ -185,5 +210,27 @@ export async function callAria({ state, history, userMessage }: CallArgs): Promi
     throw new Error(data?.error || "Aria returned an empty response.");
   }
 
-  return data as AriaResponse;
+  const res = data as AriaResponse;
+  const hasReportedUsage =
+    (res.usage?.promptTokens ?? 0) > 0 ||
+    (res.usage?.completionTokens ?? 0) > 0 ||
+    (res.usage?.totalTokens ?? 0) > 0;
+  if (!hasReportedUsage) {
+    const promptTokens = estimateTokensFromUnknown(requestPayloadForEstimate);
+    const completionTokens = estimateTokensFromUnknown({
+      events: res.events,
+      explanation: res.explanation,
+      mealBreakUpdates: res.mealBreakUpdates,
+      fixedBlockUpdates: res.fixedBlockUpdates,
+    });
+    res.usage = {
+      promptTokens,
+      completionTokens,
+      totalTokens: promptTokens + completionTokens,
+      model: res.usage?.model,
+      source: "estimated",
+    };
+  }
+
+  return res;
 }

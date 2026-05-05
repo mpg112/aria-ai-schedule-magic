@@ -53,6 +53,145 @@ function toNonNegInt(value: unknown): number {
   return Math.round(n);
 }
 
+function pickFirstNumber(obj: Record<string, unknown> | null | undefined, keys: string[]): number {
+  if (!obj) return 0;
+  for (const k of keys) {
+    if (k in obj) {
+      const n = toNonNegInt(obj[k]);
+      if (n > 0) return n;
+    }
+  }
+  return 0;
+}
+
+function extractUsage(data: any): {
+  promptTokens: number;
+  completionTokens: number;
+  totalTokens: number;
+  model?: string;
+  source: "reported" | "estimated" | "unavailable";
+} {
+  const usage = (data?.usage ?? null) as Record<string, unknown> | null;
+  const usageMetadata = (data?.usage_metadata ?? null) as Record<string, unknown> | null;
+  const candidate = usage ?? usageMetadata;
+
+  // Try common naming variants across providers/gateways.
+  const promptTokens = pickFirstNumber(candidate, [
+    "prompt_tokens",
+    "promptTokens",
+    "input_tokens",
+    "inputTokens",
+    "prompt_token_count",
+    "input_token_count",
+  ]);
+  const completionTokens = pickFirstNumber(candidate, [
+    "completion_tokens",
+    "completionTokens",
+    "output_tokens",
+    "outputTokens",
+    "candidates_token_count",
+    "completion_token_count",
+  ]);
+  let totalTokens = pickFirstNumber(candidate, [
+    "total_tokens",
+    "totalTokens",
+    "total_token_count",
+  ]);
+  if (totalTokens === 0 && (promptTokens > 0 || completionTokens > 0)) {
+    totalTokens = promptTokens + completionTokens;
+  }
+
+  if (promptTokens > 0 || completionTokens > 0 || totalTokens > 0) {
+    return {
+      promptTokens,
+      completionTokens,
+      totalTokens,
+      model: typeof data?.model === "string" ? data.model : undefined,
+      source: "reported",
+    };
+  }
+
+  return {
+    promptTokens: 0,
+    completionTokens: 0,
+    totalTokens: 0,
+    model: typeof data?.model === "string" ? data.model : undefined,
+    source: "unavailable",
+  };
+}
+
+function estimateTokensFromText(text: string): number {
+  const clean = text.trim();
+  if (!clean) return 0;
+  // Practical rough heuristic for English-like text + JSON payloads.
+  return Math.max(1, Math.round(clean.length / 4));
+}
+
+function estimateUsageFromPayload({
+  requestPayload,
+  modelReplyContent,
+  toolArgumentsText,
+  model,
+}: {
+  requestPayload: unknown;
+  modelReplyContent: string;
+  toolArgumentsText: string;
+  model?: string;
+}): {
+  promptTokens: number;
+  completionTokens: number;
+  totalTokens: number;
+  model?: string;
+  source: "estimated";
+} {
+  const promptText = JSON.stringify(requestPayload ?? {});
+  const completionText = `${modelReplyContent}\n${toolArgumentsText}`.trim();
+  const promptTokens = estimateTokensFromText(promptText);
+  const completionTokens = estimateTokensFromText(completionText);
+  return {
+    promptTokens,
+    completionTokens,
+    totalTokens: promptTokens + completionTokens,
+    model,
+    source: "estimated",
+  };
+}
+
+function withFallbackEstimate({
+  reportedUsage,
+  requestPayload,
+  modelReplyContent,
+  toolArgumentsText,
+}: {
+  reportedUsage: {
+    promptTokens: number;
+    completionTokens: number;
+    totalTokens: number;
+    model?: string;
+    source: "reported" | "estimated" | "unavailable";
+  };
+  requestPayload: unknown;
+  modelReplyContent: string;
+  toolArgumentsText: string;
+}): {
+  promptTokens: number;
+  completionTokens: number;
+  totalTokens: number;
+  model?: string;
+  source: "reported" | "estimated" | "unavailable";
+} {
+  if (reportedUsage.source === "reported") return reportedUsage;
+  const estimated = estimateUsageFromPayload({
+    requestPayload,
+    modelReplyContent,
+    toolArgumentsText,
+    model: reportedUsage.model,
+  });
+  return {
+    ...estimated,
+  };
+}
+
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") {
     return new Response(null, { headers: corsHeaders });
@@ -175,6 +314,16 @@ Deno.serve(async (req) => {
       },
     ];
 
+    const gatewayPayload = {
+      model: "google/gemini-2.5-flash",
+      messages: [
+        { role: "system", content: SYSTEM_PROMPT },
+        contextMessage,
+        ...messages,
+      ],
+      tools,
+      tool_choice: { type: "function", function: { name: "update_schedule" } },
+    };
     const response = await fetch(
       "https://ai.gateway.lovable.dev/v1/chat/completions",
       {
@@ -183,16 +332,7 @@ Deno.serve(async (req) => {
           Authorization: `Bearer ${LOVABLE_API_KEY}`,
           "Content-Type": "application/json",
         },
-        body: JSON.stringify({
-          model: "google/gemini-2.5-flash",
-          messages: [
-            { role: "system", content: SYSTEM_PROMPT },
-            contextMessage,
-            ...messages,
-          ],
-          tools,
-          tool_choice: { type: "function", function: { name: "update_schedule" } },
-        }),
+        body: JSON.stringify(gatewayPayload),
       }
     );
 
@@ -229,13 +369,15 @@ Deno.serve(async (req) => {
       );
     }
 
-    const args = JSON.parse(toolCall.function.arguments);
-    const usage = {
-      promptTokens: toNonNegInt(data?.usage?.prompt_tokens),
-      completionTokens: toNonNegInt(data?.usage?.completion_tokens),
-      totalTokens: toNonNegInt(data?.usage?.total_tokens),
-      model: typeof data?.model === "string" ? data.model : undefined,
-    };
+    const argsText = typeof toolCall?.function?.arguments === "string" ? toolCall.function.arguments : "";
+    const args = JSON.parse(argsText);
+    const reportedUsage = extractUsage(data);
+    const usage = withFallbackEstimate({
+      reportedUsage,
+      requestPayload: gatewayPayload,
+      modelReplyContent: String(data?.choices?.[0]?.message?.content ?? ""),
+      toolArgumentsText: argsText,
+    });
 
     return new Response(JSON.stringify({ ...args, usage }), {
       headers: { ...corsHeaders, "Content-Type": "application/json" },
